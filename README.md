@@ -65,6 +65,10 @@ The risk analyzer accepts transaction amounts in the integer field `amount_yocto
 
 An amount strictly greater than `10 * 10**24` yoctoNEAR (more than 10 NEAR) adds 30 risk points. Exactly 10 NEAR does not trigger this signal. This is an experimental threshold, not an established security standard.
 
+## Caller-provided `known_malicious` signal
+
+After input validation, `known_malicious: true` returns `BLOCK` with a risk score of 100. If the field is omitted, it defaults to `false` for this signal alone; the analyzer's other checks still apply. The caller is responsible for the value. The analyzer does not fetch malicious-address lists or independently verify the signal, so this result reflects the supplied input and does not by itself establish that the recipient is malicious.
+
 ## Local transaction simulator
 
 `simulate_transaction(action, resource, transaction, policy_engine)` validates the request wrapper, then evaluates policy and transaction risk independently. Its result preserves each engine's status, decision, and reasons. A policy denial, risk `BLOCK`, or engine error produces a final `BLOCK`; policy allow plus risk `WARN` remains `WARN`, never an automatic allow. Invalid wrappers are blocked with `INVALID_INPUT`, and neither engine is evaluated.
