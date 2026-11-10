@@ -120,6 +120,22 @@ class TransactionSimulatorTests(unittest.TestCase):
             ("Risk: Recipient is marked as known malicious",),
         )
 
+    def test_missing_amount_is_blocked_by_real_risk_analyzer(self):
+        transaction = dict(self.safe_transaction)
+        del transaction["amount_yocto"]
+
+        result = self.simulate(transaction=transaction)
+
+        self.assertEqual(result.decision, SimulationDecision.BLOCK)
+        self.assertEqual(result.status, SimulationStatus.COMPLETED)
+        self.assertEqual(result.policy.status, EvaluationStatus.EVALUATED)
+        self.assertTrue(result.policy.allowed)
+        self.assertEqual(result.risk.status, EvaluationStatus.EVALUATED)
+        self.assertEqual(result.risk.decision, RiskDecision.BLOCK)
+        self.assertEqual(result.risk.risk_score, 100)
+        self.assertEqual(result.risk.reasons, ("Invalid transaction amount",))
+        self.assertEqual(result.reasons, ("Risk: Invalid transaction amount",))
+
     def test_explicit_policy_deny_blocks_even_when_risk_allows(self):
         engine = PolicyEngine(
             [PolicyRule("deny-transfer", Effect.DENY, "transfer", "alice.near")]
