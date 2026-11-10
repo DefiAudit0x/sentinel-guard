@@ -138,6 +138,28 @@ class TransactionSimulatorTests(unittest.TestCase):
         self.assertEqual(result.risk.reasons, ())
         self.assertEqual(result.reasons, ("Policy denied: explicit_deny",))
 
+    def test_matching_deny_overrides_allow_regardless_of_rule_order(self):
+        deny_rule = PolicyRule("deny-transfer", Effect.DENY, "transfer", "alice.near")
+        allow_rule = PolicyRule("allow-transfer", Effect.ALLOW, "transfer", "alice.near")
+        results = []
+
+        for order, rules in (
+            ("deny_before_allow", (deny_rule, allow_rule)),
+            ("allow_before_deny", (allow_rule, deny_rule)),
+        ):
+            with self.subTest(order=order):
+                result = self.simulate(engine=PolicyEngine(rules))
+
+                self.assertEqual(result.decision, SimulationDecision.BLOCK)
+                self.assertEqual(result.status, SimulationStatus.COMPLETED)
+                self.assertEqual(result.policy.status, EvaluationStatus.EVALUATED)
+                self.assertFalse(result.policy.allowed)
+                self.assertEqual(result.risk.status, EvaluationStatus.EVALUATED)
+                self.assertEqual(result.risk.decision, RiskDecision.ALLOW)
+                results.append(result)
+
+        self.assertEqual(results[0], results[1])
+
     def test_default_deny_blocks_even_when_risk_allows(self):
         result = self.simulate(engine=PolicyEngine())
 
