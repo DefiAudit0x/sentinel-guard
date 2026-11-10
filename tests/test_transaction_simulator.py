@@ -111,6 +111,7 @@ class TransactionSimulatorTests(unittest.TestCase):
         self.assertEqual(result.policy.matched_rule, "allow-transfer")
         self.assertEqual(result.risk.status, EvaluationStatus.EVALUATED)
         self.assertEqual(result.risk.decision, RiskDecision.BLOCK)
+        self.assertEqual(result.risk.risk_score, 100)
         self.assertEqual(
             result.risk.reasons,
             ("Recipient is marked as known malicious",),
