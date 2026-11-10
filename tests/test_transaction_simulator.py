@@ -75,8 +75,12 @@ class TransactionSimulatorTests(unittest.TestCase):
         self.assertEqual(result.status, SimulationStatus.COMPLETED)
         self.assertEqual(result.policy.status, EvaluationStatus.EVALUATED)
         self.assertTrue(result.policy.allowed)
+        self.assertEqual(result.policy.reason, "matched_allow_rule")
+        self.assertEqual(result.policy.matched_rule, "allow-transfer")
         self.assertEqual(result.risk.status, EvaluationStatus.EVALUATED)
         self.assertEqual(result.risk.decision, RiskDecision.ALLOW)
+        self.assertEqual(result.risk.reasons, ())
+        self.assertEqual(result.reasons, ())
 
     def test_policy_allow_and_risk_warn_produce_warn(self):
         transaction = dict(self.safe_transaction, amount_yocto=11 * 10**24)
@@ -84,7 +88,14 @@ class TransactionSimulatorTests(unittest.TestCase):
         result = self.simulate(transaction=transaction)
 
         self.assertEqual(result.decision, SimulationDecision.WARN)
+        self.assertEqual(result.status, SimulationStatus.COMPLETED)
+        self.assertEqual(result.policy.status, EvaluationStatus.EVALUATED)
+        self.assertTrue(result.policy.allowed)
+        self.assertEqual(result.policy.reason, "matched_allow_rule")
+        self.assertEqual(result.policy.matched_rule, "allow-transfer")
+        self.assertEqual(result.risk.status, EvaluationStatus.EVALUATED)
         self.assertEqual(result.risk.decision, RiskDecision.WARN)
+        self.assertEqual(result.risk.reasons, ("Transaction amount exceeds threshold",))
         self.assertIn("Risk: Transaction amount exceeds threshold", result.reasons)
 
     def test_policy_allow_and_risk_block_produce_block(self):
@@ -93,7 +104,21 @@ class TransactionSimulatorTests(unittest.TestCase):
         result = self.simulate(transaction=transaction)
 
         self.assertEqual(result.decision, SimulationDecision.BLOCK)
+        self.assertEqual(result.status, SimulationStatus.COMPLETED)
+        self.assertEqual(result.policy.status, EvaluationStatus.EVALUATED)
+        self.assertTrue(result.policy.allowed)
+        self.assertEqual(result.policy.reason, "matched_allow_rule")
+        self.assertEqual(result.policy.matched_rule, "allow-transfer")
+        self.assertEqual(result.risk.status, EvaluationStatus.EVALUATED)
         self.assertEqual(result.risk.decision, RiskDecision.BLOCK)
+        self.assertEqual(
+            result.risk.reasons,
+            ("Recipient is marked as known malicious",),
+        )
+        self.assertEqual(
+            result.reasons,
+            ("Risk: Recipient is marked as known malicious",),
+        )
 
     def test_explicit_policy_deny_blocks_even_when_risk_allows(self):
         engine = PolicyEngine(
@@ -103,9 +128,15 @@ class TransactionSimulatorTests(unittest.TestCase):
         result = self.simulate(engine=engine)
 
         self.assertEqual(result.decision, SimulationDecision.BLOCK)
+        self.assertEqual(result.status, SimulationStatus.COMPLETED)
+        self.assertEqual(result.policy.status, EvaluationStatus.EVALUATED)
+        self.assertFalse(result.policy.allowed)
         self.assertEqual(result.policy.reason, "explicit_deny")
-        self.assertEqual(result.risk.decision, RiskDecision.ALLOW)
+        self.assertEqual(result.policy.matched_rule, "deny-transfer")
         self.assertEqual(result.risk.status, EvaluationStatus.EVALUATED)
+        self.assertEqual(result.risk.decision, RiskDecision.ALLOW)
+        self.assertEqual(result.risk.reasons, ())
+        self.assertEqual(result.reasons, ("Policy denied: explicit_deny",))
 
     def test_default_deny_blocks_even_when_risk_allows(self):
         result = self.simulate(engine=PolicyEngine())

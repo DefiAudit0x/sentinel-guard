@@ -31,6 +31,20 @@ Run all tests:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
+Run the complete local verification sequence from the project root:
+
+```bash
+./scripts/verify.sh
+```
+
+You can also invoke the script by its absolute path from outside the project directory:
+
+```bash
+/workspace/sentinel-guard/scripts/verify.sh
+```
+
+The script finds the project root from its own location and uses only the existing `.venv/bin/python`. It does not install dependencies or connect to the internet; pytest must already be available in the virtual environment.
+
 ## Example
 
 ```python
