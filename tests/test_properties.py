@@ -6,6 +6,7 @@ import unittest
 from copy import deepcopy
 
 from sentinel_guard.policy_engine import Effect, PolicyEngine, PolicyRule
+from sentinel_guard.risk_analyzer import RiskDecision
 from sentinel_guard.reporting import (
     simulation_result_to_dict,
     simulation_result_to_json,
@@ -59,11 +60,26 @@ class SecurityPropertyTests(unittest.TestCase):
             "known_malicious": False,
         }
         snapshot = deepcopy(tx)
-        baseline = simulate_transaction(engine, "transfer", "alice.near", tx)
+        baseline = simulate_transaction(
+            action="transfer",
+            resource="alice.near",
+            transaction=tx,
+            policy_engine=engine,
+        )
+        self.assertIs(baseline.status, SimulationStatus.COMPLETED)
+        self.assertIs(baseline.decision, SimulationDecision.WARN)
+        self.assertTrue(baseline.policy.allowed)
+        self.assertEqual(baseline.policy.reason, "matched_allow_rule")
+        self.assertIs(baseline.risk.decision, RiskDecision.WARN)
         baseline_json = simulation_result_to_json(baseline)
 
         for _ in range(20):
-            current = simulate_transaction(engine, "transfer", "alice.near", tx)
+            current = simulate_transaction(
+                action="transfer",
+                resource="alice.near",
+                transaction=tx,
+                policy_engine=engine,
+            )
             self.assertEqual(current, baseline)
             self.assertEqual(simulation_result_to_json(current), baseline_json)
             self.assertEqual(tx, snapshot)
@@ -85,7 +101,12 @@ class SecurityPropertyTests(unittest.TestCase):
         }
         for permutation in itertools.permutations(rule_set):
             engine = PolicyEngine(permutation)
-            sim = simulate_transaction(engine, "transfer", "vault.near", tx)
+            sim = simulate_transaction(
+                action="transfer",
+                resource="vault.near",
+                transaction=tx,
+                policy_engine=engine,
+            )
             self.assertIs(sim.status, SimulationStatus.COMPLETED)
             self.assertIs(sim.decision, SimulationDecision.BLOCK)
             self.assertFalse(sim.policy.allowed)
@@ -112,14 +133,36 @@ class SecurityPropertyTests(unittest.TestCase):
             "amount_yocto": 50 * YOCTO,
             "known_malicious": True,
         }
-        self.assertEqual(
-            simulate_transaction(allow_engine, "transfer", "target.near", safe_tx).policy,
-            simulate_transaction(allow_engine, "transfer", "target.near", risky_tx).policy,
+        safe_result = simulate_transaction(
+            action="transfer",
+            resource="target.near",
+            transaction=safe_tx,
+            policy_engine=allow_engine,
         )
-        self.assertEqual(
-            simulate_transaction(allow_engine, "transfer", "target.near", risky_tx).risk,
-            simulate_transaction(deny_engine, "transfer", "target.near", risky_tx).risk,
+        risky_allow_result = simulate_transaction(
+            action="transfer",
+            resource="target.near",
+            transaction=risky_tx,
+            policy_engine=allow_engine,
         )
+        risky_deny_result = simulate_transaction(
+            action="transfer",
+            resource="target.near",
+            transaction=risky_tx,
+            policy_engine=deny_engine,
+        )
+        for result in (safe_result, risky_allow_result, risky_deny_result):
+            self.assertIs(result.status, SimulationStatus.COMPLETED)
+
+        self.assertIs(safe_result.decision, SimulationDecision.ALLOW)
+        self.assertTrue(safe_result.policy.allowed)
+        self.assertEqual(safe_result.policy.reason, "matched_allow_rule")
+        self.assertEqual(risky_allow_result.policy, safe_result.policy)
+        self.assertTrue(risky_allow_result.policy.allowed)
+        self.assertFalse(risky_deny_result.policy.allowed)
+        self.assertEqual(risky_deny_result.policy.reason, "explicit_deny")
+        self.assertEqual(risky_allow_result.risk, risky_deny_result.risk)
+        self.assertIs(risky_allow_result.risk.decision, RiskDecision.BLOCK)
 
     def test_structured_reporting_output(self) -> None:
         engine = PolicyEngine(
@@ -131,7 +174,12 @@ class SecurityPropertyTests(unittest.TestCase):
             "previous_interactions": 5,
             "account_age_days": 365,
         }
-        result = simulate_transaction(engine, "transfer", "alice.near", tx)
+        result = simulate_transaction(
+            action="transfer",
+            resource="alice.near",
+            transaction=tx,
+            policy_engine=engine,
+        )
         report = simulation_result_to_dict(result)
         self.assertEqual(report["decision"], "BLOCK")
         self.assertEqual(report["status"], "COMPLETED")

@@ -149,7 +149,7 @@ After input validation, `known_malicious: true` returns `BLOCK` with a risk scor
 
 ## Local transaction simulator
 
-`simulate_transaction(action, resource, transaction, policy_engine)` validates the request wrapper, then evaluates policy and transaction risk independently. Its result preserves each engine's status, decision, and reasons. A policy denial, risk `BLOCK`, or engine error produces a final `BLOCK`; policy allow plus risk `WARN` remains `WARN`, never an automatic allow. Invalid wrappers are blocked with `INVALID_INPUT`, and neither engine is evaluated.
+`simulate_transaction(action, resource, transaction, policy_engine)` validates the request wrapper, then evaluates policy and transaction risk independently. A supplied resource must exactly match the transaction recipient; if `resource` is `None`, a valid recipient is used for policy matching so recipient-specific denies cannot be bypassed by a general allow. Its result preserves each engine's status, decision, and reasons. A policy denial, risk `BLOCK`, or engine error produces a final `BLOCK`; policy allow plus risk `WARN` remains `WARN`, never an automatic allow. Invalid wrappers are blocked with `INVALID_INPUT`, and neither engine is evaluated.
 
 This is local decision orchestration only. It does not request human approval, connect to NEAR, sign or submit transactions, or modify files outside this project; it is not a production security boundary.
 

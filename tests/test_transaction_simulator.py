@@ -1148,21 +1148,39 @@ class TransactionSimulatorTests(unittest.TestCase):
                 self.assertIn("risk_score", result.risk.error)
                 self.assertIn("integer from 0 to 100", result.risk.error)
 
-    def test_resource_none_does_not_match_resource_specific_allow(self):
+    def test_mismatched_resource_is_rejected_before_evaluation(self):
+        engine = StubPolicyEngine(PolicyDecision(True, "matched_allow_rule"))
+        transaction = dict(self.safe_transaction, recipient="bob.near")
+
+        result = simulate_transaction(
+            "transfer", "alice.near", transaction, engine
+        )
+
+        self.assertEqual(result.decision, SimulationDecision.BLOCK)
+        self.assertEqual(result.status, SimulationStatus.INVALID_INPUT)
+        self.assertEqual(result.policy.status, EvaluationStatus.NOT_EVALUATED)
+        self.assertEqual(result.risk.status, EvaluationStatus.NOT_EVALUATED)
+        self.assertEqual(
+            result.reasons,
+            ("resource must match transaction recipient",),
+        )
+        self.assertEqual(engine.calls, 0)
+
+    def test_resource_none_uses_transaction_recipient_for_specific_allow(self):
         result = simulate_transaction(
             "transfer", None, self.safe_transaction, self.allow_engine
         )
 
-        self.assertEqual(result.decision, SimulationDecision.BLOCK)
+        self.assertEqual(result.decision, SimulationDecision.ALLOW)
         self.assertEqual(result.status, SimulationStatus.COMPLETED)
         self.assertEqual(result.policy.status, EvaluationStatus.EVALUATED)
-        self.assertFalse(result.policy.allowed)
-        self.assertEqual(result.policy.reason, "default_deny")
-        self.assertIsNone(result.policy.matched_rule)
+        self.assertTrue(result.policy.allowed)
+        self.assertEqual(result.policy.reason, "matched_allow_rule")
+        self.assertEqual(result.policy.matched_rule, "allow-transfer")
         self.assertEqual(result.risk.status, EvaluationStatus.EVALUATED)
         self.assertEqual(result.risk.decision, RiskDecision.ALLOW)
         self.assertEqual(result.risk.risk_score, 0)
-        self.assertEqual(result.reasons, ("Policy denied: default_deny",))
+        self.assertEqual(result.reasons, ())
 
     def test_resource_none_is_allowed_by_general_policy(self):
         engine = PolicyEngine([
@@ -1188,7 +1206,7 @@ class TransactionSimulatorTests(unittest.TestCase):
         self.assertEqual(result.risk.risk_score, 0)
         self.assertEqual(result.reasons, ())
 
-    def test_specific_deny_does_not_match_none_resource_with_general_allow(self):
+    def test_resource_none_applies_specific_deny_over_general_allow(self):
         engine = PolicyEngine(
             [
                 PolicyRule(
@@ -1210,16 +1228,16 @@ class TransactionSimulatorTests(unittest.TestCase):
             "transfer", None, self.safe_transaction, engine
         )
 
-        self.assertEqual(result.decision, SimulationDecision.ALLOW)
+        self.assertEqual(result.decision, SimulationDecision.BLOCK)
         self.assertEqual(result.status, SimulationStatus.COMPLETED)
         self.assertEqual(result.policy.status, EvaluationStatus.EVALUATED)
-        self.assertTrue(result.policy.allowed)
-        self.assertEqual(result.policy.reason, "matched_allow_rule")
-        self.assertEqual(result.policy.matched_rule, "allow-all-transfers")
+        self.assertFalse(result.policy.allowed)
+        self.assertEqual(result.policy.reason, "explicit_deny")
+        self.assertEqual(result.policy.matched_rule, "deny-alice-transfer")
         self.assertEqual(result.risk.status, EvaluationStatus.EVALUATED)
         self.assertEqual(result.risk.decision, RiskDecision.ALLOW)
         self.assertEqual(result.risk.risk_score, 0)
-        self.assertEqual(result.reasons, ())
+        self.assertEqual(result.reasons, ("Policy denied: explicit_deny",))
 
     def test_specific_deny_overrides_general_allow_regardless_of_rule_order(self):
         allow_rule = PolicyRule(
@@ -1271,10 +1289,11 @@ class TransactionSimulatorTests(unittest.TestCase):
         self.assertEqual(results[0], results[1])
 
     def test_unmatched_resource_is_denied_while_real_risk_allows(self):
+        transaction = dict(self.safe_transaction, recipient="bob.near")
         result = simulate_transaction(
             "transfer",
             "bob.near",
-            self.safe_transaction,
+            transaction,
             self.allow_engine,
         )
 

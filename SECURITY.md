@@ -2,13 +2,13 @@
 
 ## Scope
 
-Sentinel Guard is a local prototype that evaluates an action/resource pair against in-memory policy rules and evaluates a caller-supplied, already-decoded transaction dictionary. Policy matching is exact: a rule without a resource applies to any resource for its action; a resource-specific rule must match exactly. Any matching `DENY` overrides matching `ALLOW` rules, regardless of rule order. When no rule matches, policy evaluation returns `default_deny`.
+Sentinel Guard is a local prototype that evaluates an action/resource pair against in-memory policy rules and evaluates a caller-supplied, already-decoded transaction dictionary. For simulator calls, a supplied resource must exactly match a valid transaction recipient; when resource is omitted, the recipient is used for policy evaluation. Policy matching is exact: a rule without a resource applies to any resource for its action; a resource-specific rule must match exactly. Any matching `DENY` overrides matching `ALLOW` rules, regardless of rule order. When no rule matches, policy evaluation returns `default_deny`.
 
 The simulator only combines these local decisions. It does not read blockchain or network state, sign or submit transactions, execute them, or request human approval. It is not a production security boundary.
 
 ## Trust boundaries and inputs
 
-The caller supplies the action, resource, transaction fields, in-memory policy rules, and descriptive signals such as `recipient_is_contract`, `recipient_code_changed`, `previous_interactions`, and `account_age_days`. The prototype does not independently establish that these values describe a real transaction or account, nor does it parse or authenticate raw transaction data.
+The caller supplies the action, resource, transaction fields, in-memory policy rules, and descriptive signals such as `recipient_is_contract`, `recipient_code_changed`, `previous_interactions`, and `account_age_days`. The simulator checks that an explicit resource agrees with a valid transaction recipient, but it does not independently establish that the supplied values describe a real transaction or account, nor does it parse or authenticate raw transaction data.
 
 `known_malicious` is a caller-provided Boolean signal, not a verified finding. After the analyzer's input checks, `true` produces `BLOCK` with score 100; when omitted, it defaults to `false` for this signal only. Sentinel Guard does not fetch or verify a malicious-address list, so this result alone does not establish that a recipient is malicious.
 

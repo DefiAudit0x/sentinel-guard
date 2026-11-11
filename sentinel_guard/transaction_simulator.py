@@ -92,6 +92,19 @@ def _validate_wrapper(
     elif any(not isinstance(key, str) for key in transaction):
         errors.append("transaction keys must be strings")
 
+    if (
+        isinstance(transaction, dict)
+        and isinstance(resource, str)
+        and resource.strip()
+    ):
+        recipient = transaction.get("recipient")
+        if (
+            isinstance(recipient, str)
+            and recipient.strip()
+            and resource != recipient
+        ):
+            errors.append("resource must match transaction recipient")
+
     return tuple(errors)
 
 
@@ -192,7 +205,9 @@ def simulate_transaction(
     The request wrapper is validated before either engine runs. After valid input,
     a failure in either engine is recorded and does not prevent the other from
     being evaluated. A policy denial or risk BLOCK always blocks; risk WARN is
-    preserved as WARN and is never upgraded to ALLOW.
+    preserved as WARN and is never upgraded to ALLOW. An omitted resource uses
+    a valid transaction recipient for policy evaluation; a conflicting explicit
+    resource is rejected during wrapper validation.
     """
     validation_errors = _validate_wrapper(action, resource, transaction)
     if validation_errors:
@@ -206,7 +221,15 @@ def simulate_transaction(
 
     # Type narrowing follows wrapper validation; engines remain isolated so one
     # engine's exception cannot suppress the other's evaluation.
-    policy_result = _evaluate_policy(policy_engine, action, resource)  # type: ignore[arg-type]
+    policy_resource = resource
+    if policy_resource is None:
+        recipient = transaction.get("recipient")
+        if isinstance(recipient, str) and recipient.strip():
+            policy_resource = recipient
+
+    policy_result = _evaluate_policy(
+        policy_engine, action, policy_resource  # type: ignore[arg-type]
+    )
     risk_result = _evaluate_risk(transaction)  # type: ignore[arg-type]
 
     if (

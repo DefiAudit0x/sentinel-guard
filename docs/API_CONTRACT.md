@@ -13,18 +13,18 @@ simulate_transaction(
 ) -> SimulationResult
 ```
 
-The simulator first validates the request wrapper. For a valid wrapper, it evaluates policy and transaction risk independently, even if one evaluator errors. `resource` is passed directly to the policy engine; the transaction's `recipient` is passed to risk analysis. The simulator does not check that those two values agree.
+The simulator first validates the request wrapper. For a valid wrapper, it evaluates policy and transaction risk independently, even if one evaluator errors. A supplied `resource` must exactly match a valid `transaction["recipient"]`; a mismatch is rejected as `INVALID_INPUT` before either evaluator runs. If `resource` is `None` and the transaction recipient is a valid non-empty string, that recipient is used for policy evaluation. This ensures recipient-specific `DENY` rules still override a general `ALLOW` rule when callers omit `resource`. The transaction's recipient is also passed to risk analysis.
 
 ### Request wrapper
 
 | Argument | Requirement |
 | --- | --- |
 | `action` | A non-empty string after whitespace trimming. The original string is passed through and matched exactly; it is not normalized. |
-| `resource` | `None` or a non-empty string after whitespace trimming. The original string is passed through and matched exactly. |
+| `resource` | `None` or a non-empty string after whitespace trimming. A supplied value must exactly equal a valid transaction recipient. If omitted and the recipient is valid, the recipient is used for policy matching. |
 | `transaction` | A dictionary whose keys are all strings. Transaction-field validation is performed by the risk analyzer, not by wrapper validation. |
 | `policy_engine` | An object with a callable `evaluate(action, resource)` method. Its result must be a `PolicyDecision` with a boolean `allowed`, a non-empty string `reason`, and `matched_rule` either a string or `None`. |
 
-If wrapper validation fails, the simulator returns `decision=BLOCK`, `status=INVALID_INPUT`, both evaluator statuses `NOT_EVALUATED`, and the wrapper validation messages in `reasons`. Neither evaluator is called. A missing or malformed risk field is **not** a wrapper error: it is reported by the risk evaluator as an evaluated `BLOCK` result.
+If wrapper validation fails, the simulator returns `decision=BLOCK`, `status=INVALID_INPUT`, both evaluator statuses `NOT_EVALUATED`, and the wrapper validation messages in `reasons`. Neither evaluator is called. A missing or malformed risk field is **not** a wrapper error: it is reported by the risk evaluator as an evaluated `BLOCK` result. When `resource=None` and the recipient is missing or invalid, policy receives `None` and the risk evaluator blocks the invalid transaction recipient.
 
 ## Policy contract
 
