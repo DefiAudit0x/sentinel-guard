@@ -1,5 +1,6 @@
 import unittest
 from copy import deepcopy
+from types import MappingProxyType
 from unittest.mock import patch
 
 from sentinel_guard.policy_engine import (
@@ -8,7 +9,7 @@ from sentinel_guard.policy_engine import (
     PolicyEngine,
     PolicyRule,
 )
-from sentinel_guard.risk_analyzer import RiskDecision, RiskResult
+from sentinel_guard.risk_analyzer import RiskDecision, RiskResult, analyze_transaction
 from sentinel_guard.transaction_simulator import (
     EvaluationStatus,
     PolicyErrorStage,
@@ -670,6 +671,39 @@ class TransactionSimulatorTests(unittest.TestCase):
                 self.assertEqual(transaction, original_copy)
 
 
+    def test_risk_uses_read_only_snapshot_before_mutating_policy_engine(self):
+        transaction = dict(self.safe_transaction)
+        expected_snapshot = deepcopy(transaction)
+        policy_resources = []
+
+        class MutatingPolicyEngine:
+            def evaluate(_self, action, resource=None):
+                policy_resources.append(resource)
+                transaction["recipient"] = "mallory.testnet"
+                transaction["amount_yocto"] = 11 * 10**24
+                transaction["known_malicious"] = True
+                return PolicyDecision(True, "matched_allow_rule")
+
+        engine = MutatingPolicyEngine()
+        with patch(
+            "sentinel_guard.transaction_simulator.analyze_transaction",
+            wraps=analyze_transaction,
+        ) as risk_analyzer:
+            result = simulate_transaction("transfer", None, transaction, engine)
+
+        self.assertEqual(result.policy.status, EvaluationStatus.EVALUATED)
+        self.assertTrue(result.policy.allowed)
+        self.assertEqual(policy_resources, ["alice.near"])
+        self.assertEqual(result.risk.status, EvaluationStatus.EVALUATED)
+        self.assertEqual(result.risk.decision, RiskDecision.ALLOW)
+        self.assertEqual(result.risk.risk_score, 0)
+        risk_snapshot = risk_analyzer.call_args.args[0]
+        self.assertIsInstance(risk_snapshot, MappingProxyType)
+        self.assertEqual(dict(risk_snapshot), expected_snapshot)
+        with self.assertRaises(TypeError):
+            risk_snapshot["recipient"] = "mallory.testnet"
+
+
 
     def test_action_mismatch_is_denied_while_real_risk_allows(self):
         result = simulate_transaction(
@@ -947,12 +981,15 @@ class TransactionSimulatorTests(unittest.TestCase):
         transaction = dict(self.safe_transaction)
         del transaction["recipient"]
 
-        result = self.simulate(transaction=transaction)
+        result = simulate_transaction(
+            "transfer", None, transaction, self.allow_engine
+        )
 
         self.assertEqual(result.decision, SimulationDecision.BLOCK)
         self.assertEqual(result.status, SimulationStatus.COMPLETED)
         self.assertEqual(result.policy.status, EvaluationStatus.EVALUATED)
-        self.assertTrue(result.policy.allowed)
+        self.assertFalse(result.policy.allowed)
+        self.assertEqual(result.policy.reason, "default_deny")
         self.assertEqual(result.risk.status, EvaluationStatus.EVALUATED)
         self.assertEqual(result.risk.decision, RiskDecision.BLOCK)
         self.assertEqual(result.risk.risk_score, 100)
@@ -962,8 +999,42 @@ class TransactionSimulatorTests(unittest.TestCase):
         )
         self.assertEqual(
             result.reasons,
-            ("Risk: Missing or invalid recipient",),
+            (
+                "Policy denied: default_deny",
+                "Risk: Missing or invalid recipient",
+            ),
         )
+
+    def test_explicit_resource_requires_valid_recipient_before_either_evaluator(self):
+        transactions = []
+        missing_recipient = dict(self.safe_transaction)
+        del missing_recipient["recipient"]
+        transactions.append(("missing", missing_recipient))
+        for label, recipient in (("null", None), ("non-string", 123), ("empty", ""), ("whitespace", " \t ")):
+            transactions.append((label, dict(self.safe_transaction, recipient=recipient)))
+
+        for label, transaction in transactions:
+            with self.subTest(recipient=label):
+                engine = StubPolicyEngine(PolicyDecision(True, "matched_allow_rule"))
+                with patch("sentinel_guard.transaction_simulator.analyze_transaction") as analyze:
+                    result = simulate_transaction(
+                        "transfer", "alice.near", transaction, engine
+                    )
+
+                self.assertEqual(result.decision, SimulationDecision.BLOCK)
+                self.assertEqual(result.status, SimulationStatus.INVALID_INPUT)
+                self.assertEqual(
+                    result.policy.status, EvaluationStatus.NOT_EVALUATED
+                )
+                self.assertEqual(
+                    result.risk.status, EvaluationStatus.NOT_EVALUATED
+                )
+                self.assertEqual(
+                    result.reasons,
+                    ("explicit resource requires a valid transaction recipient",),
+                )
+                self.assertEqual(engine.calls, 0)
+                analyze.assert_not_called()
 
     def test_multiple_wrapper_errors_are_reported_in_stable_order(self):
         engine = StubPolicyEngine(PolicyDecision(True, "matched_allow_rule"))

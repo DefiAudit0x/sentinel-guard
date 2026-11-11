@@ -13,18 +13,18 @@ simulate_transaction(
 ) -> SimulationResult
 ```
 
-The simulator first validates the request wrapper. For a valid wrapper, it evaluates policy and transaction risk independently, even if one evaluator errors. A supplied `resource` must exactly match a valid `transaction["recipient"]`; a mismatch is rejected as `INVALID_INPUT` before either evaluator runs. If `resource` is `None` and the transaction recipient is a valid non-empty string, that recipient is used for policy evaluation. This ensures recipient-specific `DENY` rules still override a general `ALLOW` rule when callers omit `resource`. The transaction's recipient is also passed to risk analysis.
+The simulator first validates the request wrapper. For a valid wrapper, it evaluates policy and transaction risk independently, even if one evaluator errors. A supplied `resource` requires `transaction["recipient"]` to be a valid non-empty string and must exactly match it; a missing, invalid, or mismatched recipient/resource pair is rejected as `INVALID_INPUT` before either evaluator runs. If `resource` is `None` and the transaction recipient is a valid non-empty string, that recipient is used for policy evaluation. This ensures recipient-specific `DENY` rules still override a general `ALLOW` rule when callers omit `resource`. The transaction's recipient is also passed to risk analysis.
 
 ### Request wrapper
 
 | Argument | Requirement |
 | --- | --- |
 | `action` | A non-empty string after whitespace trimming. The original string is passed through and matched exactly; it is not normalized. |
-| `resource` | `None` or a non-empty string after whitespace trimming. A supplied value must exactly equal a valid transaction recipient. If omitted and the recipient is valid, the recipient is used for policy matching. |
+| `resource` | `None` or a non-empty string after whitespace trimming. A supplied value requires a valid non-empty string recipient and must exactly equal it. If omitted and the recipient is valid, the recipient is used for policy matching. |
 | `transaction` | A dictionary whose keys are all strings. Transaction-field validation is performed by the risk analyzer, not by wrapper validation. |
 | `policy_engine` | An object with a callable `evaluate(action, resource)` method. Its result must be a `PolicyDecision` with a boolean `allowed`, a non-empty string `reason`, and `matched_rule` either a string or `None`. |
 
-If wrapper validation fails, the simulator returns `decision=BLOCK`, `status=INVALID_INPUT`, both evaluator statuses `NOT_EVALUATED`, and the wrapper validation messages in `reasons`. Neither evaluator is called. A missing or malformed risk field is **not** a wrapper error: it is reported by the risk evaluator as an evaluated `BLOCK` result. When `resource=None` and the recipient is missing or invalid, policy receives `None` and the risk evaluator blocks the invalid transaction recipient.
+If wrapper validation fails, the simulator returns `decision=BLOCK`, `status=INVALID_INPUT`, both evaluator statuses `NOT_EVALUATED`, and the wrapper validation messages in `reasons`. Neither evaluator is called. A missing or malformed risk field is **not** a wrapper error: it is reported by the risk evaluator as an evaluated `BLOCK` result. When `resource=None` and the recipient is missing or invalid, policy receives `None` and the risk evaluator blocks the invalid transaction recipient. When an explicit resource is supplied with a missing, non-string, empty, or whitespace-only recipient, the wrapper instead returns `INVALID_INPUT` before either evaluator runs.
 
 ## Policy contract
 
@@ -145,3 +145,44 @@ print(result.risk.status.value, result.risk.decision.value, result.risk.risk_sco
 ```
 
 With these values the local result is `COMPLETED ALLOW`; policy allows the exact action/resource, and the risk score is 0. This is only an example of the implemented local contract, not evidence of network or production protection.
+
+
+## NEAR testnet JavaScript preflight
+
+`examples/near_testnet_preflight.js` is a separate integration layer; it does not change the Python simulator contract above. It accepts only a supported native transfer intent and requires a connected `NearConnector` configured as `new NearConnector({ network: "testnet" })`. The host application must have completed any wallet connection separately. The adapter calls the existing connector's `wallet()` and the returned wallet's `getAccounts()` only; it does not call `connect()`.
+
+The adapter builds one immutable-by-copy intent with `action: "transfer"`, `resource` equal to the exact recipient, and transaction fields `recipient`, canonical decimal-string `amount_yocto`, and the caller's JSON context. Reserved context keys cannot override `recipient` or `amount_yocto`. The complete intent is submitted to the existing request-bound JavaScript/Python bridge, which evaluates it using the local Sentinel Guard policy and risk engines. Unsupported context fields and invalid amounts fail closed in that local adapter.
+
+### JSON adapter local policy
+
+`sentinel_guard/json_adapter.py` loads its policy path from `SENTINEL_GUARD_POLICY_FILE`; `evaluate_request(request, policy_path)` also accepts an explicit path for local callers and tests. There is no implicit allow policy. An unset path, unreadable file, malformed JSON, duplicate key, or invalid schema returns `ERROR` / `BLOCK`, marks policy evaluation as `ERROR`, and does not evaluate risk or continue to a callback.
+
+The file must contain exactly these version-1 fields:
+
+```json
+{
+  "version": 1,
+  "default": "deny",
+  "allowed_recipients": ["alice.near"],
+  "max_amount_yocto": "20000000000000000000000000"
+}
+```
+
+`allowed_recipients` contains unique valid lowercase NEAR account IDs of 2–64 characters, using `[a-z0-9]+` segments separated only by `.`, `_`, or `-`; no case folding or trimming is applied. The request's transaction recipient and any supplied `resource` use the same grammar, and `resource` must exactly match the transaction recipient. An empty allow-list is valid and denies every recipient. `max_amount_yocto` is a canonical non-negative decimal string of at most 80 digits, and policy compares it with the canonical transaction amount as an exact Python integer (yoctoNEAR), never a float. Equality with the cap is allowed by policy; larger amounts are denied. `examples/test_policy.json` is fictional test/demo data only and is not a recommended or inferred financial policy.
+
+For a `COMPLETED` + `ALLOW` guard result, the adapter sends read-only JSON-RPC `status` and `query` (`request_type: "view_account"`, `finality: "final"`) requests to the fixed `https://rpc.testnet.near.org` endpoint. It requires `status.result.chain_id === "testnet"` before reading the account. It returns `status: "PREPARED_NOT_SUBMITTED"` with the local decision and account snapshot; `WARN` and `BLOCK` return before wallet or RPC access. Multiple connected accounts require an explicit account ID.
+
+The module contains no transaction construction for wallet submission and never invokes `signTransaction`, `signAndSendTransaction`, or `signAndSendTransactions`. `PREPARED_NOT_SUBMITTED` is not signing authorization, fee estimation, a guarantee that a future transaction will succeed, or evidence that the heuristic policy is production-safe. Balance, account metadata, and caller-supplied risk context may be stale or incomplete. The unit tests use mocked RPC responses and do not contact the testnet.
+
+For the maintained wallet integration guidance, see [NEAR's Wallet Login documentation](https://docs.near.org/web3-apps/tutorials/wallet-login) and the [NEAR Connect repository](https://github.com/azbang/near-connect). The documentation explicitly recommends `@hot-labs/near-connect` rather than deprecated Wallet Selector.
+
+### Local wallet UI boundary
+
+`ui/main.mjs` dynamically loads `@hot-labs/near-connect` only after the user clicks Connect. It constructs `NearConnector` with `network: "testnet"`, `autoConnect: false`, and a local manifest containing only `meteor-wallet`; the executor URL is pinned to immutable commit `6369ad789d2f3aaf8e6ccb065021723111027174`. It calls `connect({ walletId: "meteor-wallet" })` directly, so the multi-wallet picker is not used. Since connector 0.12.0 independently accepts injected-provider events and can replace a wallet with the same ID, the UI installs capture-phase guards for both the `near-wallet-injected` CustomEvent and parent-frame message before connector construction. It rejects any detected injection and accepts a connected wallet only when its manifest is the exact pinned object. After that check, the controller reads the account list; the application requests account sign-in, and its own source contains no transaction-signing or submission call. However, the third-party Meteor executor receives NEAR Connect storage permission and access to the `meteorCom` and `meteorComV2` bridges. It has not been audited here, so the application cannot guarantee what that executor does when the user connects; the UI shows this warning before Connect. The browser sends the selected account ID, fixed recipient, exact yoctoNEAR amount, and optional caller-supplied risk context to `app/local_ui_server.js`.
+
+The Node server binds to `127.0.0.1` only. It accepts only the exact recipient `defiaudit0x.testnet`, a positive amount at or below `100000000000000000000000` yoctoNEAR, and the two documented optional context fields. It creates a synthetic connector exposing only `wallet()`/`getAccounts()` for the existing preflight adapter; it does not attest wallet ownership, and the account ID is treated as a client-supplied identifier for read-only lookup. The local policy remains server-side through `SENTINEL_GUARD_POLICY_FILE`, and startup rejects a policy path inside the generated static UI directory. Static routing is restricted to `/`, `/index.html`, and built `/assets/*` files.
+
+An omitted account-age or interaction value remains omitted and may cause the existing risk engine to return `WARN` / `NEEDS_REVIEW`; the UI must not invent those facts. `WARN`, `BLOCK`, policy failure, and invalid input do not lead to account RPC reads. `PREPARED_NOT_SUBMITTED` means only that local evaluation allowed the request and a read-only account snapshot succeeded. Before the preflight button, the page discloses that an `ALLOW` causes the selected public account ID to be sent to `https://rpc.testnet.near.org` for a read-only lookup. CSP allows only `raw.githubusercontent.com` for the pinned executor and icon and `rpc.testnet.near.org` for preflight; it does not allow the connector's default manifest endpoints or an HTTPS wildcard. The UI tests mock the wallet and RPC, exercise both injected-provider paths and reject a cloned same-ID manifest, verify that the application code does not call transaction-signing or submission methods, and check server input and static-path restrictions. These tests do not audit or establish the behavior of the third-party executor. Pinning it is not an audit or safety guarantee.
+
+
+**Policy boundary:** the JSON bridge applies only the explicitly configured local policy file. The bundled example is non-production test data; a preflight `ALLOW` is not authorization to transact, a guarantee of safety, or a claim that caller-provided risk context is verified. The risk heuristics remain experimental.

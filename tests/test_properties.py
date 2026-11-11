@@ -5,12 +5,10 @@ import json
 import unittest
 from copy import deepcopy
 
+from sentinel_guard import simulation_result_to_json
 from sentinel_guard.policy_engine import Effect, PolicyEngine, PolicyRule
 from sentinel_guard.risk_analyzer import RiskDecision
-from sentinel_guard.reporting import (
-    simulation_result_to_dict,
-    simulation_result_to_json,
-)
+from sentinel_guard.reporting import simulation_result_to_dict
 from sentinel_guard.transaction_simulator import (
     SimulationDecision,
     SimulationStatus,
@@ -164,7 +162,7 @@ class SecurityPropertyTests(unittest.TestCase):
         self.assertEqual(risky_allow_result.risk, risky_deny_result.risk)
         self.assertIs(risky_allow_result.risk.decision, RiskDecision.BLOCK)
 
-    def test_structured_reporting_output(self) -> None:
+    def test_structured_reporting_output_through_public_package_export(self) -> None:
         engine = PolicyEngine(
             [PolicyRule("deny-alice", Effect.DENY, "transfer", "alice.near")]
         )

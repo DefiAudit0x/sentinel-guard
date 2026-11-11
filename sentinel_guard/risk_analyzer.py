@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -21,7 +22,7 @@ class RiskResult:
     reasons: tuple[str, ...]
 
 
-def analyze_transaction(transaction: dict[str, Any]) -> RiskResult:
+def analyze_transaction(transaction: Mapping[str, Any]) -> RiskResult:
     """
     Deterministic transaction risk analyzer.
 

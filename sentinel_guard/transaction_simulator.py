@@ -6,8 +6,11 @@ transactions.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
 from typing import Any
 
 from .policy_engine import PolicyDecision
@@ -98,11 +101,9 @@ def _validate_wrapper(
         and resource.strip()
     ):
         recipient = transaction.get("recipient")
-        if (
-            isinstance(recipient, str)
-            and recipient.strip()
-            and resource != recipient
-        ):
+        if not isinstance(recipient, str) or not recipient.strip():
+            errors.append("explicit resource requires a valid transaction recipient")
+        elif resource != recipient:
             errors.append("resource must match transaction recipient")
 
     return tuple(errors)
@@ -160,7 +161,7 @@ def _evaluate_policy(
         )
 
 
-def _evaluate_risk(transaction: dict[str, Any]) -> RiskEvaluation:
+def _evaluate_risk(transaction: Mapping[str, Any]) -> RiskEvaluation:
     try:
         result = analyze_transaction(transaction)
         if not isinstance(result, RiskResult):
@@ -206,8 +207,9 @@ def simulate_transaction(
     a failure in either engine is recorded and does not prevent the other from
     being evaluated. A policy denial or risk BLOCK always blocks; risk WARN is
     preserved as WARN and is never upgraded to ALLOW. An omitted resource uses
-    a valid transaction recipient for policy evaluation; a conflicting explicit
-    resource is rejected during wrapper validation.
+    a valid transaction recipient for policy evaluation. An explicit resource
+    requires a valid transaction recipient and must match it; either violation
+    is rejected during wrapper validation before either evaluator runs.
     """
     validation_errors = _validate_wrapper(action, resource, transaction)
     if validation_errors:
@@ -219,18 +221,34 @@ def simulate_transaction(
             reasons=validation_errors,
         )
 
-    # Type narrowing follows wrapper validation; engines remain isolated so one
-    # engine's exception cannot suppress the other's evaluation.
+    # Both evaluations use one detached, read-only view. A caller-supplied policy
+    # engine may hold a reference to the original request and mutate it.
+    try:
+        transaction_snapshot = MappingProxyType(deepcopy(transaction))
+    except Exception as error:
+        snapshot_error = _error_text(error)
+        return SimulationResult(
+            decision=SimulationDecision.BLOCK,
+            status=SimulationStatus.ERROR,
+            policy=PolicyEvaluation(status=EvaluationStatus.NOT_EVALUATED),
+            risk=RiskEvaluation(
+                status=EvaluationStatus.ERROR,
+                error=snapshot_error,
+            ),
+            reasons=(f"Transaction snapshot error: {snapshot_error}",),
+        )
+
+    # Engines remain isolated so one engine's exception cannot suppress the other's evaluation.
     policy_resource = resource
     if policy_resource is None:
-        recipient = transaction.get("recipient")
+        recipient = transaction_snapshot.get("recipient")
         if isinstance(recipient, str) and recipient.strip():
             policy_resource = recipient
 
     policy_result = _evaluate_policy(
         policy_engine, action, policy_resource  # type: ignore[arg-type]
     )
-    risk_result = _evaluate_risk(transaction)  # type: ignore[arg-type]
+    risk_result = _evaluate_risk(transaction_snapshot)
 
     if (
         policy_result.status is not EvaluationStatus.EVALUATED

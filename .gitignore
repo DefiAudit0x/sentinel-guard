@@ -26,6 +26,7 @@ htmlcov/
 # Build, packaging, and temporary artifacts
 build/
 dist/
+node_modules/
 *.egg-info/
 *.log
 *.swp

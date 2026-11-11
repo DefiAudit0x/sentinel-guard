@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Sentinel Guard · Testnet preflight</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">LOCAL PROTOTYPE · NEAR TESTNET</p>
+        <h1>Read-only transfer preflight</h1>
+        <p class="lead">Connect a wallet only when you choose. This page checks a proposed transfer and reads account data. The application's preflight code contains no transaction-signing or submission call; connecting also loads a third-party executor, described below.</p>
+      </header>
+
+      <section class="notice" aria-label="Safety boundary">
+        <strong>The application's preflight flow does not sign or submit transactions.</strong>
+        <span>“PREPARED_NOT_SUBMITTED” is a local result, not approval or a safety guarantee. This statement does not guarantee third-party executor behavior during wallet connection.</span>
+      </section>
+
+      <section class="card" aria-labelledby="wallet-heading">
+        <div class="section-heading">
+          <div>
+            <p class="step">01 · WALLET</p>
+            <h2 id="wallet-heading">Connect to testnet</h2>
+          </div>
+          <span class="network-pill">NEAR TESTNET</span>
+        </div>
+        <p id="wallet-status" class="muted" role="status">Not connected. Nothing connects automatically.</p>
+        <label for="account-select">Connected account</label>
+        <select id="account-select" disabled aria-describedby="wallet-status">
+          <option value="">Connect a wallet first</option>
+        </select>
+        <section id="executor-risk-disclosure" class="notice notice-risk" aria-label="Third-party executor risk">
+          <strong>Third-party executor risk — review before connecting.</strong>
+          <span>Connecting loads Meteor's executor, pinned to commit <code>6369ad7</code>, through NEAR Connect and requests wallet account sign-in. The manifest grants the executor NEAR Connect storage permission and access to Meteor's <code>meteorCom</code> and <code>meteorComV2</code> bridges; it may open only <code>https://wallet.meteorwallet.app</code> or <code>https://meteorwallet.app</code>. This application's code contains no transaction-signing or submission call, but the third-party executor has not been audited here. We cannot guarantee what its code does when you connect. Connect only if you trust this executor and its permissions.</span>
+        </section>
+        <button id="connect-wallet" class="button button-primary" type="button" disabled aria-describedby="executor-risk-disclosure">Connect Meteor wallet</button>
+      </section>
+
+      <section class="card" aria-labelledby="transfer-heading">
+        <div class="section-heading">
+          <div>
+            <p class="step">02 · CHECK</p>
+            <h2 id="transfer-heading">Review transfer intent</h2>
+          </div>
+        </div>
+        <form id="preflight-form">
+          <label for="recipient">Allowed testnet recipient</label>
+          <input id="recipient" name="recipient" value="defiaudit0x.testnet" readonly />
+          <p class="hint">Recipient is fixed by the local policy.</p>
+
+          <label for="amount">Amount (NEAR)</label>
+          <input id="amount" name="amount" inputmode="decimal" autocomplete="off" placeholder="e.g. 0.05" required />
+          <p class="hint">Enter a positive amount up to 0.1 NEAR. Decimal precision is exact; no floating-point conversion is used.</p>
+
+          <details class="context-details">
+            <summary>Optional risk context</summary>
+            <p class="hint">Only enter values you actually know. These are caller-supplied and are not independently verified. Leaving them blank may produce NEEDS_REVIEW.</p>
+            <label for="previous-interactions">Previous interactions with this recipient</label>
+            <input id="previous-interactions" type="number" min="0" step="1" inputmode="numeric" />
+            <label for="account-age-days">Account age (days)</label>
+            <input id="account-age-days" type="number" min="0" step="1" inputmode="numeric" />
+          </details>
+
+          <p id="rpc-disclosure" class="hint" role="note">If the local guard returns ALLOW, the preflight sends the selected public account ID to <code>https://rpc.testnet.near.org</code> for a read-only account lookup; WARN or BLOCK stops before that RPC read. The application's preflight code has no transaction-signing or submission call.</p>
+          <button id="run-preflight" class="button button-secondary" type="submit" disabled>Run read-only preflight</button>
+        </form>
+      </section>
+
+      <section id="result-card" class="card result-card" aria-labelledby="result-heading" hidden>
+        <p class="step">RESULT</p>
+        <h2 id="result-heading">Preflight result</h2>
+        <p id="result-status" role="status"></p>
+        <pre id="result-details" aria-live="polite"></pre>
+      </section>
+
+      <footer>Experimental local prototype. Testnet preflight only; its application code has no transaction-signing or submission call. See the third-party executor risk notice before connecting.</footer>
+    </main>
+    <script type="module" src="./main.mjs"></script>
+  </body>
+</html>
