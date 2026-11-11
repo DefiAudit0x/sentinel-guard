@@ -1,0 +1,18 @@
+{
+  "name": "Sentinel Guard",
+  "description": "A local-first, deterministic transaction security and policy evaluation framework for NEAR applications and autonomous AI agents. Sentinel Guard combines exact-match policy enforcement with rule-based transaction risk analysis to produce explainable ALLOW, WARN, or BLOCK decisions before any NEAR transaction is signed.",
+  "problem": "AI agents and automated applications operating on NEAR need to execute transfers and contract calls without exposing user treasuries to unauthorized actions, drained funds, or recently mutated smart contracts. Relying on probabilistic LLM prompts for spending security is brittle, while scattering ad-hoc checks across application code makes security decisions opaque, hard to audit, and impossible to reproduce deterministically.",
+  "links": {
+    "live": [],
+    "contracts": []
+  },
+  "userFlow": [
+    "Clone the repository and run ./scripts/verify.sh — pytest and unittest execute the unit, boundary, integration, failure, and property test suites with zero network dependencies and report all checks passing",
+    "Run python3 examples/local_demo.py — the CLI evaluates three deterministic NEAR transaction scenarios (safe transfer, above-threshold warning, and explicit policy/malicious recipient block) and prints the unified decision, status, policy evaluation, risk score, and reasons for each scenario",
+    "Import simulate_transaction, PolicyEngine, PolicyRule, and simulation_result_to_json from sentinel_guard — evaluate proposed action/resource pairs and transaction context locally with fail-closed guarantees before signing"
+  ],
+  "media": {
+    "videos": [],
+    "screenshots": []
+  }
+}
