@@ -1,6 +1,84 @@
 # Sentinel Guard
 
-Sentinel Guard is an early, local prototype for deterministic policy decisions in a NEAR hackathon project. The current scope is intentionally small: evaluate an action/resource pair against in-memory rules, give explicit deny rules precedence, and deny by default when no rule permits an action.
+A local-first, deterministic transaction security and policy evaluation framework for NEAR applications and autonomous AI agents. Sentinel Guard combines exact-match policy enforcement with rule-based transaction risk analysis to produce explainable ALLOW, WARN, or BLOCK decisions before any NEAR transaction is signed.
+
+## Problem
+
+AI agents and automated applications operating on NEAR need to execute transfers and contract calls without exposing user treasuries to unauthorized actions, drained funds, or recently mutated smart contracts. Relying on probabilistic LLM prompts for spending security is brittle, while scattering ad-hoc checks across application code makes security decisions opaque, hard to audit, and impossible to reproduce deterministically.
+
+## Links
+
+- **Live Demo**: N/A (Local CLI evaluation tool)
+- **Contracts**: N/A (Local client-side transaction simulation & policy guard)
+
+## How to try it
+
+1. **Verify the test suite**:
+   Clone the repository and run `./scripts/verify.sh` — `pytest` and `unittest` execute the unit, boundary, integration, failure, and property test suites with zero network dependencies and report all checks passing.
+
+2. **Run local CLI demo**:
+   Run `python3 examples/local_demo.py` — the CLI evaluates three deterministic NEAR transaction scenarios (safe transfer, above-threshold warning, and explicit policy/malicious recipient block) and prints the unified decision, status, policy evaluation, risk score, and reasons for each scenario.
+
+3. **Integrate Sentinel Guard**:
+   Import `simulate_transaction`, `PolicyEngine`, `PolicyRule`, and `simulation_result_to_json` from `sentinel_guard` — evaluate proposed action/resource pairs and transaction context locally with fail-closed guarantees before signing.
+
+## Screenshots and video
+
+- Screenshots: N/A
+- Demo Video: N/A
+
+## Architecture
+
+```
+                                +-----------------------------+
+                                | Proposed Transaction Context |
+                                +--------------+--------------+
+                                               |
+                                               v
+                                +--------------+--------------+
+                                |     simulate_transaction    |
+                                +--------------+--------------+
+                                               |
+                       +-----------------------+-----------------------+
+                       |                                               |
+                       v                                               v
+        +--------------+--------------+                 +--------------+--------------+
+        |        PolicyEngine         |                 |        RiskAnalyzer         |
+        |  (Exact-match DENY/ALLOW)   |                 | (Rule-based Risk Scoring)   |
+        +--------------+--------------+                 +--------------+--------------+
+                       |                                               |
+                       v                                               v
+        +--------------+--------------+                 +--------------+--------------+
+        |        PolicyResult         |                 |          RiskResult         |
+        |  (allowed, matched_rule)    |                 |   (decision, risk_score)    |
+        +--------------+--------------+                 +--------------+--------------+
+                       |                                               |
+                       +-----------------------+-----------------------+
+                                               |
+                                               v
+                                +--------------+--------------+
+                                |      SimulationResult       |
+                                |   ALLOW / WARN / BLOCK      |
+                                +-----------------------------+
+```
+
+Sentinel Guard follows a dual-engine architecture:
+- **PolicyEngine**: Evaluates exact-match rules (`ALLOW` or `DENY`) on `(action, resource)`. DENY rules take precedence over ALLOW rules, with a default-deny model.
+- **RiskAnalyzer**: Evaluates numeric risk scoring based on transfer thresholds, contract state mutation checks, interaction history, and known malicious recipient flags.
+- **TransactionSimulator**: Combines policy evaluation and risk analysis into a unified `SimulationDecision` (`ALLOW`, `WARN`, `BLOCK`).
+
+## Threat Model
+
+Sentinel Guard addresses key attack vectors facing automated agents and NEAR applications:
+1. **Malicious Recipient Drain**: Direct transfers to known drainers or unauthorized accounts are blocked by explicit `DENY` policies or flagged by high risk scores.
+2. **Contract Code Mutation**: Recent smart contract deployments/mutations raise risk scores to prevent interacting with unvetted contracts.
+3. **Large Outflow Risk**: Single transactions exceeding pre-configured thresholds (e.g. 10 NEAR) trigger warnings or strict review requirements.
+4. **Untrusted LLM Execution**: Prevents AI agent hallucination-based asset loss by enforcing strict local, deterministic checks before key signing.
+
+## Limitations
+
+- **Local / In-Memory Evaluation**: Sentinel Guard operates locally before transaction submission and does not perform live RPC state fetching unless context is provided by the caller.
+- **Static Policy Rules**: Current policy rules require explicit configuration in code or local policy files. evaluate an action/resource pair against in-memory rules, give explicit deny rules precedence, and deny by default when no rule permits an action.
 
 ## Requirements
 
