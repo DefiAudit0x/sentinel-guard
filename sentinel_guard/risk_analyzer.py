@@ -25,14 +25,16 @@ def analyze_transaction(transaction: dict[str, Any]) -> RiskResult:
     """
     Deterministic transaction risk analyzer.
 
-    Expected optional fields:
-      - recipient: str
-      - amount_yocto: int (yoctoNEAR; 1 NEAR = 10**24 yoctoNEAR)
-      - recipient_is_contract: bool
-      - recipient_code_changed: bool
-      - known_malicious: bool
-      - previous_interactions: int
-      - account_age_days: int
+    Required for a non-blocking evaluation:
+      - recipient: non-empty str
+      - amount_yocto: non-negative int (yoctoNEAR; 1 NEAR = 10**24 yoctoNEAR)
+
+    Optional fields and defaults:
+      - recipient_is_contract: bool (False)
+      - recipient_code_changed: bool (False)
+      - known_malicious: bool (False)
+      - previous_interactions: non-negative int (0)
+      - account_age_days: non-negative int (0)
     """
 
     score = 0

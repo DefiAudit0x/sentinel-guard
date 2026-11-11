@@ -5,7 +5,7 @@ Sentinel Guard is an early, local prototype for deterministic policy decisions i
 ## Requirements
 
 - Python 3.12 or newer
-- No third-party Python packages are required
+- No third-party Python packages are required to run the application; `pytest` is needed for the full test suite.
 
 ## Set up
 
@@ -74,6 +74,24 @@ After input validation, `known_malicious: true` returns `BLOCK` with a risk scor
 `simulate_transaction(action, resource, transaction, policy_engine)` validates the request wrapper, then evaluates policy and transaction risk independently. Its result preserves each engine's status, decision, and reasons. A policy denial, risk `BLOCK`, or engine error produces a final `BLOCK`; policy allow plus risk `WARN` remains `WARN`, never an automatic allow. Invalid wrappers are blocked with `INVALID_INPUT`, and neither engine is evaluated.
 
 This is local decision orchestration only. It does not request human approval, connect to NEAR, sign or submit transactions, or modify files outside this project; it is not a production security boundary.
+
+## Local Demo
+
+From the project root, run the deterministic local demonstration:
+
+```bash
+.venv/bin/python examples/local_demo.py
+```
+
+With the included scenarios, the final decisions and risk scores are:
+
+| Scenario | Final decision | Risk score |
+| --- | --- | ---: |
+| 1 NEAR transfer to a familiar, unflagged recipient | `ALLOW` | 0 |
+| 11 NEAR transfer, above the 10 NEAR risk threshold | `WARN` | 30 |
+| 1 NEAR transfer to a recipient explicitly marked as known malicious | `BLOCK` | 100 |
+
+This is a deterministic, local simulation: it does not connect to the NEAR network, sign transactions, or submit transactions. It demonstrates prototype behavior only and is not evidence that real transactions are safe or protected.
 
 ## Current limitations
 

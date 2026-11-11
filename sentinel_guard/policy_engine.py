@@ -22,10 +22,16 @@ class PolicyRule:
     resource: str | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise ValueError("rule name must be a string")
         if not self.name.strip():
             raise ValueError("rule name must not be empty")
+        if not isinstance(self.action, str):
+            raise ValueError("rule action must be a string")
         if not self.action.strip():
             raise ValueError("rule action must not be empty")
+        if self.resource is not None and not isinstance(self.resource, str):
+            raise ValueError("rule resource must be a string or None")
         if self.resource is not None and not self.resource.strip():
             raise ValueError("rule resource must not be empty when provided")
         if not isinstance(self.effect, Effect):
