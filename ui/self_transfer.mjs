@@ -255,9 +255,9 @@ export async function assertSelfTransferSigningBoundary({
     throw new Error("Transfer review binding changed after the local guard decision.");
   }
 
-  const accounts = await wallet.getAccounts({ network: NETWORK });
-  if (!Array.isArray(accounts)
-    || !accounts.some((account) => account && account.accountId === review.signingParams.signerId)) {
-    throw new Error("The exact Testnet sender is no longer present in the connected wallet.");
+  const savedTestnetAccounts = await wallet.getAccounts({ network: NETWORK });
+  if (!Array.isArray(savedTestnetAccounts)
+    || !savedTestnetAccounts.some((account) => account && account.accountId === review.signingParams.signerId)) {
+    throw new Error("The exact Testnet sender is no longer in Meteor SDK's saved account record; this is not a live ownership check.");
   }
 }

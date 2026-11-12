@@ -149,11 +149,8 @@ test("blank context remains a warning and stops before RPC rather than fabricati
 });
 
 test("rejects cross-origin requests and never serves files outside the UI asset allow-list", async () => {
-  const allowedConnectOrigins = [
-    "https://raw.githubusercontent.com",
-    new URL(TESTNET_RPC_URL).origin,
-  ];
-  const allowedImageOrigins = ["https://raw.githubusercontent.com"];
+  const allowedConnectOrigins = [new URL(TESTNET_RPC_URL).origin];
+  const allowedImageSources = ["'self'", "data:"];
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-ui-static-"));
   const staticRoot = path.join(temp, "public");
   const privatePolicy = path.join(temp, "private-policy.json");
@@ -176,13 +173,14 @@ test("rejects cross-origin requests and never serves files outside the UI asset 
         `script-src 'self' 'nonce-${nonce}'`,
         "style-src 'self' 'unsafe-inline'",
         `connect-src 'self' ${allowedConnectOrigins.join(" ")}`,
-        `img-src 'self' data: ${allowedImageOrigins.join(" ")}`,
+        `img-src ${allowedImageSources.join(" ")}`,
         "frame-src 'self'",
         "object-src 'none'",
         "base-uri 'none'",
         "frame-ancestors 'none'",
       ].join("; "));
       assert.doesNotMatch(csp, /\*/);
+      assert.doesNotMatch(csp, /raw\.githubusercontent\.com/);
       assert.doesNotMatch(csp.split("; ").find((directive) => directive.startsWith("script-src ")), /unsafe-inline/);
       assert.match(markup, /<script type="module" crossorigin src="\/assets\/main\.mjs" nonce="[A-Za-z0-9+/=]+">/);
       const secondPage = await fetch(`${base}/`);
@@ -195,7 +193,7 @@ test("rejects cross-origin requests and never serves files outside the UI asset 
       );
       assert.deepEqual(
         csp.split("; ").find((directive) => directive.startsWith("img-src ")).split(" ").slice(1),
-        ["'self'", "data:", ...allowedImageOrigins],
+        allowedImageSources,
       );
       assert.doesNotMatch(csp, /hot-dao\/near-selector|azbang\/hot-connector/);
       const privatePath = await fetch(`${base}/policy.json`);

@@ -16,8 +16,8 @@
       </header>
 
       <section class="notice notice-risk" aria-label="Safety boundary">
-        <strong>Connecting or requesting a transaction involves an unaudited third-party executor.</strong>
-        <span>The application checks one fixed Testnet transfer and does not sign automatically. The Meteor executor has not been audited and may not obey this application's checks. A wallet confirmation is still required; verify the exact transaction there. The preflight result is not a safety guarantee.</span>
+        <strong>Wallet actions use a third-party SDK and Meteor Wallet.</strong>
+        <span>Ordinary sign-in requests account access only. The optional fixed Testnet transfer is separate and is never requested automatically. Its review gate is client-side only; verify any wallet prompt before approval. A live transfer has not been tested.</span>
       </section>
 
       <section class="card" aria-labelledby="wallet-heading">
@@ -33,11 +33,11 @@
         <select id="account-select" disabled aria-describedby="wallet-status">
           <option value="">Connect a wallet first</option>
         </select>
-        <section id="executor-risk-disclosure" class="notice notice-risk" aria-label="Third-party executor risk">
-          <strong>Third-party executor risk — review before connecting.</strong>
-          <span>Connecting loads Meteor's executor, pinned to commit <code>6369ad7</code>, through NEAR Connect and requests wallet account sign-in. The manifest grants the executor NEAR Connect storage permission and access to Meteor's <code>meteorCom</code> and <code>meteorComV2</code> bridges; it may open only <code>https://wallet.meteorwallet.app</code> or <code>https://meteorwallet.app</code>. This demo also declares NEAR Connect's single-transaction sign-and-send feature for a fixed Testnet transfer. The executor is unaudited; this application cannot guarantee that its code is limited to the displayed intent. Connect only if you trust this executor and its permissions.</span>
+        <section id="meteor-sdk-disclosure" class="notice notice-risk" aria-label="Meteor SDK sign-in scope">
+          <strong>Meteor SDK sign-in — review before connecting.</strong>
+          <span>Clicking Connect loads <code>@meteorwallet/sdk</code> and requests only ordinary NEAR Testnet account sign-in. It does not request a function-call key, a message signature, or a transaction. The fixed self-transfer is a separate flow: it requires local ALLOW, an exact review, and a second click; the SDK is instructed not to use a function-call key. The SDK and wallet are third-party components not audited here, and this client-side gate is not a safety guarantee. A live transfer has not been tested.</span>
         </section>
-        <button id="connect-wallet" class="button button-primary" type="button" disabled aria-describedby="executor-risk-disclosure">Connect Meteor wallet</button>
+        <button id="connect-wallet" class="button button-primary" type="button" disabled aria-describedby="meteor-sdk-disclosure">Connect Meteor wallet</button>
       </section>
 
       <section class="card" aria-labelledby="transfer-heading">
@@ -78,7 +78,7 @@
           </div>
           <span class="network-pill">0.001 NEAR</span>
         </div>
-        <p class="muted">Fixed intent: sender and receiver are both <code>defiaudit0x.testnet</code>; action is one native NEAR <code>Transfer</code>; amount is <code>1000000000000000000000</code> yoctoNEAR. The sender is taken from the connected wallet's live Testnet account list, not from the local server request.</p>
+        <p class="muted">Fixed intent: sender and receiver are both <code>defiaudit0x.testnet</code>; action is one native NEAR <code>Transfer</code>; amount is <code>1000000000000000000000</code> yoctoNEAR. The sender comes from the exact Testnet account record saved by Meteor SDK, not a live wallet account list. This saved record is not proof of current wallet ownership.</p>
         <p class="hint">This runs a fresh local guard and read-only account lookup. An ALLOW only opens the review below; it does not call the wallet. The latest balance must cover the transfer amount, but fees are not estimated and the wallet may still reject it.</p>
         <button id="prepare-self-transfer" class="button button-secondary" type="button" disabled>Check fixed intent and show review</button>
         <p id="self-transfer-status" class="muted" role="status">Connect the exact Testnet sender first. No transfer is prepared automatically.</p>
@@ -101,7 +101,7 @@
         <pre id="result-details" aria-live="polite"></pre>
       </section>
 
-      <footer>Demonstration-only local prototype. The fixed wallet path can request one native Testnet transfer after a separate user click, but the unaudited third-party executor may not enforce this UI's limits. No production enforcement, transaction-fee estimate, or safety guarantee is provided.</footer>
+      <footer>Demonstration-only local prototype. The fixed wallet path can request one native Testnet transfer after a separate review and click, but the third-party SDK or wallet may not enforce this UI's limits. A live transfer has not been tested. No production enforcement, transaction-fee estimate, or safety guarantee is provided.</footer>
     </main>
     <script type="module" src="./main.mjs"></script>
   </body>

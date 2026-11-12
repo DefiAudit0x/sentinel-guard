@@ -22,13 +22,8 @@ const CONTEXT_FIELDS = new Set(["previous_interactions", "account_age_days"]);
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const DEFAULT_STATIC_ROOT = path.join(PROJECT_ROOT, "dist");
 const POLICY_ENV_VAR = "SENTINEL_GUARD_POLICY_FILE";
-const METEOR_EXECUTOR_URL = "https://raw.githubusercontent.com/Meteor-Wallet/meteor_wallet_sdk/6369ad789d2f3aaf8e6ccb065021723111027174/storage/meteor-near-connect-latest.js";
-const METEOR_ICON_URL = "https://raw.githubusercontent.com/Meteor-Wallet/meteor_wallet_sdk/main/assets/meteor-logo-svg.svg";
-const CSP_CONNECT_ORIGINS = [...new Set([
-  new URL(METEOR_EXECUTOR_URL).origin,
-  new URL(TESTNET_RPC_URL).origin,
-])];
-const CSP_IMAGE_ORIGINS = [...new Set([new URL(METEOR_ICON_URL).origin])];
+const CSP_CONNECT_ORIGINS = [new URL(TESTNET_RPC_URL).origin];
+const CSP_IMAGE_SOURCES = ["'self'", "data:"];
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -45,11 +40,9 @@ const SECURITY_HEADERS = {
   "content-security-policy": [
     "default-src 'self'",
     "script-src 'self'",
-    // NEAR Connect 0.12.0 injects its selector <style> element and inline style attributes without a nonce.
-    // Keep this exception until those SDK styles can be externalized or nonce-enabled.
     "style-src 'self' 'unsafe-inline'",
     `connect-src 'self' ${CSP_CONNECT_ORIGINS.join(" ")}`,
-    `img-src 'self' data: ${CSP_IMAGE_ORIGINS.join(" ")}`,
+    `img-src ${CSP_IMAGE_SOURCES.join(" ")}`,
     "frame-src 'self'",
     "object-src 'none'",
     "base-uri 'none'",

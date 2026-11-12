@@ -66,7 +66,7 @@ export function mountUI({
   cryptoObject = globalThis.crypto,
 }) {
   if (typeof createConnector !== "function") {
-    throw new TypeError("A lazy NEAR Connect factory is required.");
+    throw new TypeError("A lazy Meteor SDK connector factory is required.");
   }
   if (!document || typeof document.querySelector !== "function") {
     throw new TypeError("A document is required.");
@@ -140,7 +140,7 @@ export function mountUI({
     updateButtons();
     setText(walletStatus, canConnect
       ? "Not connected. Nothing connects automatically."
-      : "Wallet connection is disabled until this app can enforce a reviewed Meteor-only provider.");
+      : "Wallet connection is disabled until a Meteor Testnet adapter is configured.");
   };
 
   connectButton.disabled = !canConnect;
@@ -148,30 +148,29 @@ export function mountUI({
   transferReview.hidden = true;
   updateButtons();
   if (!canConnect) {
-    setText(walletStatus, "Wallet connection is disabled until this app can enforce a reviewed Meteor-only provider.");
+    setText(walletStatus, "Wallet connection is disabled until a Meteor Testnet adapter is configured.");
   }
 
   connectButton.addEventListener("click", async () => {
     if (!canConnect || busy || connected) return;
     setBusy(true);
-    setText(walletStatus, "Connecting to the pinned Meteor Wallet…");
+    setText(walletStatus, "Requesting ordinary Meteor Testnet account sign-in…");
     try {
-      // Construction, connector module loading, and connection all follow this click.
+      // SDK loading, initialization, and sign-in all follow this explicit click.
       if (!connector) {
         const candidate = await createConnector();
         if (!candidate || candidate.network !== "testnet"
-          || typeof candidate.connect !== "function" || typeof candidate.on !== "function") {
-          throw new TypeError("The NEAR Connect factory must return a Testnet connector with the required API.");
+          || typeof candidate.connect !== "function") {
+          throw new TypeError("The Meteor SDK factory must return a Testnet connector with the required API.");
         }
-        candidate.on("wallet:signOut", resetWallet);
         connector = candidate;
       }
       const connectedWallet = await connector.connect();
       if (!connectedWallet || typeof connectedWallet.getAccounts !== "function") {
-        throw new Error("The wallet did not return a readable account list.");
+        throw new Error("The Meteor SDK adapter did not provide a Testnet account record.");
       }
       const accounts = normalizeAccounts(await connectedWallet.getAccounts({ network: "testnet" }));
-      if (accounts.length === 0) throw new Error("The connected wallet returned no accounts.");
+      if (accounts.length === 0) throw new Error("Meteor SDK has no saved Testnet account record for this sign-in.");
       clearAccounts(accountSelect);
       for (const account of accounts) {
         const option = document.createElement("option");
@@ -259,18 +258,18 @@ export function mountUI({
       return;
     }
     setBusy(true);
-    setText(selfTransferStatus, "Checking the connected Testnet account and running the fixed local preflight…");
+    setText(selfTransferStatus, "Checking Meteor SDK's saved Testnet account record and running the fixed local preflight…");
     try {
       if (connector?.network !== "testnet" || !wallet || typeof wallet.getAccounts !== "function") {
-        throw new Error("A directly connected NEAR Testnet wallet is required.");
+        throw new Error("A signed-in NEAR Testnet account record is required.");
       }
-      const liveAccounts = normalizeAccounts(await wallet.getAccounts({ network: "testnet" }));
-      const sender = liveAccounts.find((account) => account.accountId === TESTNET_SELF_TRANSFER_ACCOUNT);
+      const savedTestnetAccounts = normalizeAccounts(await wallet.getAccounts({ network: "testnet" }));
+      const sender = savedTestnetAccounts.find((account) => account.accountId === TESTNET_SELF_TRANSFER_ACCOUNT);
       if (!sender || accountSelect.value !== sender.accountId) {
-        throw new Error(`Select ${TESTNET_SELF_TRANSFER_ACCOUNT} from the connected Testnet wallet first.`);
+        throw new Error(`Select ${TESTNET_SELF_TRANSFER_ACCOUNT} from Meteor SDK's saved Testnet account record first.`);
       }
 
-      // The server uses accountId only for a read-only public RPC lookup; ownership is checked above in-browser.
+      // The server uses accountId only for read-only RPC; this saved record is not a live ownership check.
       const response = await fetchImpl("/api/preflight", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -321,7 +320,7 @@ export function mountUI({
         feeNote: "No transaction-fee estimate is provided. The wallet must show its own confirmation; verify the exact details there.",
       }, null, 2));
       setText(selfTransferStatus, "Local guard ALLOW. Review every detail below; no wallet signing or submission has been requested yet.");
-      setText(reviewStatus, "This review expires in two minutes and is bound to the exact guarded intent and connected account.");
+      setText(reviewStatus, "This review expires in two minutes and is bound to the exact guarded intent and saved Testnet account record.");
     } catch (error) {
       transferReview.hidden = true;
       review = null;
@@ -335,7 +334,7 @@ export function mountUI({
     if (busy || !review || attemptedRequestIds.has(review.requestId)) return;
     const approvedReview = review;
     setBusy(true);
-    setText(reviewStatus, "Rechecking the exact immutable review and connected Testnet account before opening the wallet…");
+    setText(reviewStatus, "Rechecking the exact immutable review and Meteor SDK's saved Testnet account record before opening the wallet…");
     try {
       if (!reviewedUiSnapshot
         || reviewedUiSnapshot.amount !== amountInput.value

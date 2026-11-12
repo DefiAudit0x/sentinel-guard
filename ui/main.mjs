@@ -1,110 +1,158 @@
+import { actionCreators } from "@near-js/transactions";
 import { mountUI } from "./controller.mjs";
+import {
+  TESTNET_SELF_TRANSFER_ACCOUNT,
+  TESTNET_SELF_TRANSFER_AMOUNT_YOCTO,
+} from "./self_transfer.mjs";
 
-export const METEOR_WALLET_ID = "meteor-wallet";
-export const METEOR_EXECUTOR_URL = "https://raw.githubusercontent.com/Meteor-Wallet/meteor_wallet_sdk/6369ad789d2f3aaf8e6ccb065021723111027174/storage/meteor-near-connect-latest.js";
-export const METEOR_ICON_URL = "https://raw.githubusercontent.com/Meteor-Wallet/meteor_wallet_sdk/main/assets/meteor-logo-svg.svg";
-
-const METEOR_WALLET_MANIFEST = Object.freeze({
-  id: METEOR_WALLET_ID,
-  platform: Object.freeze(["web"]),
-  name: "Meteor Wallet",
-  icon: METEOR_ICON_URL,
-  description: "Meteor Wallet for the local NEAR Testnet transfer demo",
-  website: "https://meteorwallet.app",
-  version: "6369ad789d2f3aaf8e6ccb065021723111027174",
-  executor: METEOR_EXECUTOR_URL,
-  type: "sandbox",
-  permissions: Object.freeze({
-    storage: true,
-    allowsOpen: Object.freeze([
-      "https://wallet.meteorwallet.app",
-      "https://meteorwallet.app",
-    ]),
-    external: Object.freeze(["meteorCom", "meteorComV2"]),
-  }),
-  features: Object.freeze({
-    signMessage: false,
-    signTransaction: false,
-    signAndSendTransaction: true,
-    signAndSendTransactions: false,
-    signInWithoutAddKey: true,
-    signInAndSignMessage: false,
-    signInWithFunctionCallKey: false,
-    signDelegateActions: false,
-    mainnet: false,
-    testnet: true,
-  }),
+export const METEOR_TESTNET_TARGET = Object.freeze({ blockchain: "near", network: "testnet" });
+const SELF_TRANSFER_SIGNING_PARAMS = Object.freeze({
+  network: "testnet",
+  signerId: TESTNET_SELF_TRANSFER_ACCOUNT,
+  receiverId: TESTNET_SELF_TRANSFER_ACCOUNT,
+  actions: Object.freeze([Object.freeze({
+    type: "Transfer",
+    params: Object.freeze({ deposit: TESTNET_SELF_TRANSFER_AMOUNT_YOCTO }),
+  })]),
 });
 
-const METEOR_ONLY_CONNECTOR_READY = true;
-
-function removeInjectedProviderListeners(windowObject, injectedListener, messageListener) {
-  windowObject.removeEventListener("near-wallet-injected", injectedListener, true);
-  windowObject.removeEventListener("message", messageListener, true);
+function isAccountForTarget(account, accountId) {
+  const identifier = account?.identifier;
+  return identifier?.blockchain === METEOR_TESTNET_TARGET.blockchain
+    && identifier.network === METEOR_TESTNET_TARGET.network
+    && typeof identifier.accountId === "string"
+    && identifier.accountId.length > 0
+    && (accountId === undefined || identifier.accountId === accountId);
 }
 
-export function createGuardedMeteorConnector({ NearConnector, windowObject = globalThis.window, cspNonce }) {
-  if (typeof NearConnector !== "function") {
-    throw new TypeError("The NEAR Connect module did not provide NearConnector.");
+function exactKeys(value, keys) {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).length === keys.length
+    && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function assertFixedTransferParams(params) {
+  if (!exactKeys(params, ["network", "signerId", "receiverId", "actions"])
+    || params.network !== SELF_TRANSFER_SIGNING_PARAMS.network
+    || params.signerId !== SELF_TRANSFER_SIGNING_PARAMS.signerId
+    || params.receiverId !== SELF_TRANSFER_SIGNING_PARAMS.receiverId
+    || !Array.isArray(params.actions) || params.actions.length !== 1) {
+    throw new Error("Only the fixed reviewed Testnet self-transfer can be requested.");
   }
-  if (!windowObject || typeof windowObject.addEventListener !== "function"
-    || typeof windowObject.removeEventListener !== "function") {
-    throw new TypeError("A browser window is required to enforce the Meteor-only provider boundary.");
+  const [action] = params.actions;
+  if (!exactKeys(action, ["type", "params"]) || action.type !== "Transfer"
+    || !exactKeys(action.params, ["deposit"])
+    || action.params.deposit !== TESTNET_SELF_TRANSFER_AMOUNT_YOCTO) {
+    throw new Error("The requested action differs from the fixed reviewed Testnet transfer.");
+  }
+}
+
+export function createMeteorConnectAdapter({
+  MeteorConnect,
+  webpage_local_storage: storage,
+  windowObject = globalThis.window,
+  transferActionCreators = actionCreators,
+}) {
+  if (typeof MeteorConnect !== "function") {
+    throw new TypeError("The Meteor SDK did not provide MeteorConnect.");
+  }
+  if (!storage || typeof storage !== "object") {
+    throw new TypeError("The Meteor SDK browser storage adapter is unavailable.");
+  }
+  const originUrl = windowObject?.location?.origin;
+  if (typeof originUrl !== "string" || !/^https?:\/\//.test(originUrl)) {
+    throw new TypeError("A browser origin is required for Meteor SDK identity.");
   }
 
-  let injectedProviderSeen = false;
-  const blockInjectedProvider = (event) => {
-    injectedProviderSeen = true;
-    event.stopImmediatePropagation?.();
-    event.preventDefault?.();
+  const meteorConnect = new MeteorConnect();
+  let initializePromise = null;
+  let signedInIdentifier = null;
+
+  const initialize = () => {
+    if (!initializePromise) {
+      initializePromise = meteorConnect.initialize({
+        storage,
+        mobileBridge: {
+          enabled: false,
+          autoOpenPairedWallet: false,
+          partnerMetadata: {
+            name: "Sentinel Guard Local Testnet Demo",
+            description: "NEAR Testnet account sign-in and fixed-transfer review",
+            originUrl,
+          },
+          transferAccounts: { enabled: false },
+          newKeyTransfer: { enabled: false },
+        },
+      }).catch((error) => {
+        initializePromise = null;
+        throw error;
+      });
+    }
+    return initializePromise;
   };
-  const blockInjectedProviderMessage = (event) => {
-    if (event?.data?.type === "near-wallet-injected") blockInjectedProvider(event);
+
+  const getStoredSignedInAccount = async () => {
+    if (!signedInIdentifier) return null;
+    const account = await meteorConnect.getAccount(signedInIdentifier);
+    return isAccountForTarget(account, signedInIdentifier.accountId) ? account : null;
   };
 
-  // Install capture-phase guards before NearConnector registers its own handlers.
-  // This blocks both its CustomEvent and parent-frame message injection paths.
-  windowObject.addEventListener("near-wallet-injected", blockInjectedProvider, true);
-  windowObject.addEventListener("message", blockInjectedProviderMessage, true);
+  const wallet = {
+    async getAccounts({ network } = {}) {
+      if (network !== METEOR_TESTNET_TARGET.network || !signedInIdentifier) return [];
+      const account = await getStoredSignedInAccount();
+      return account ? [{ accountId: account.identifier.accountId }] : [];
+    },
 
-  let connector;
-  try {
-    connector = new NearConnector({
-      network: "testnet",
-      autoConnect: false,
-      cspNonce,
-      manifest: {
-        version: "1.0.0",
-        wallets: [METEOR_WALLET_MANIFEST],
-      },
-    });
-  } catch (error) {
-    removeInjectedProviderListeners(windowObject, blockInjectedProvider, blockInjectedProviderMessage);
-    throw error;
-  }
-
-  if (!connector || connector.network !== "testnet"
-    || typeof connector.connect !== "function" || typeof connector.on !== "function") {
-    removeInjectedProviderListeners(windowObject, blockInjectedProvider, blockInjectedProviderMessage);
-    throw new TypeError("NEAR Connect did not create a testnet connector with the required API.");
-  }
+    async signAndSendTransaction(params) {
+      assertFixedTransferParams(params);
+      if (!signedInIdentifier || params.signerId !== signedInIdentifier.accountId) {
+        throw new Error("The selected account differs from the signed-in Testnet account.");
+      }
+      const account = await getStoredSignedInAccount();
+      if (!account || !isAccountForTarget(account, params.signerId)) {
+        throw new Error("The signed-in NEAR Testnet account is no longer available in Meteor SDK storage.");
+      }
+      const action = await meteorConnect.createAction({
+        id: "near::sign_transactions",
+        input: {
+          target: {
+            blockchain: account.identifier.blockchain,
+            network: account.identifier.network,
+            accountId: account.identifier.accountId,
+          },
+          transactions: [{
+            receiverId: params.receiverId,
+            actions: [transferActionCreators.transfer(BigInt(params.actions[0].params.deposit))],
+          }],
+          useFunctionCallKey: false,
+        },
+      });
+      return action.promptForExecution();
+    },
+  };
 
   return {
-    network: "testnet",
-    on(event, callback) {
-      return connector.on(event, callback);
-    },
+    network: METEOR_TESTNET_TARGET.network,
+
     async connect() {
-      if (injectedProviderSeen) {
-        throw new Error("A wallet-injected provider was blocked; only the pinned Meteor Wallet executor is allowed.");
+      await initialize();
+      const signInAction = await meteorConnect.createAction({
+        id: "near::sign_in",
+        input: { target: METEOR_TESTNET_TARGET },
+      });
+      const account = await signInAction.promptForExecution();
+      if (!isAccountForTarget(account)) {
+        throw new Error("Meteor did not return a NEAR Testnet account for ordinary sign-in.");
       }
-      const wallet = await connector.connect({ walletId: METEOR_WALLET_ID });
-      if (injectedProviderSeen) {
-        throw new Error("A wallet-injected provider was blocked; only the pinned Meteor Wallet executor is allowed.");
-      }
-      if (!wallet || wallet.manifest !== METEOR_WALLET_MANIFEST
-        || typeof wallet.getAccounts !== "function") {
-        throw new Error("NEAR Connect returned an unexpected provider; the Meteor-only connection was rejected.");
+      signedInIdentifier = {
+        blockchain: account.identifier.blockchain,
+        network: account.identifier.network,
+        accountId: account.identifier.accountId,
+      };
+      if (!await getStoredSignedInAccount()) {
+        signedInIdentifier = null;
+        throw new Error("Meteor SDK did not retain the signed-in Testnet account.");
       }
       return wallet;
     },
@@ -113,19 +161,16 @@ export function createGuardedMeteorConnector({ NearConnector, windowObject = glo
 
 export function mountLocalUI({
   document,
-  loadConnector = () => import("@hot-labs/near-connect"),
+  loadMeteorSdk = () => import("@meteorwallet/sdk"),
   windowObject = globalThis.window,
 }) {
-  const appScript = document.querySelector?.('script[type="module"][nonce]')
-    ?? document.querySelector?.("script[nonce]");
-  const cspNonce = appScript?.nonce || appScript?.getAttribute?.("nonce") || undefined;
   return mountUI({
     document,
-    connectionEnabled: METEOR_ONLY_CONNECTOR_READY,
-    createConnector: async () => {
-      const { NearConnector } = await loadConnector();
-      return createGuardedMeteorConnector({ NearConnector, windowObject, cspNonce });
-    },
+    connectionEnabled: true,
+    createConnector: async () => createMeteorConnectAdapter({
+      ...(await loadMeteorSdk()),
+      windowObject,
+    }),
   });
 }
 

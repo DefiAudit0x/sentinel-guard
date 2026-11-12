@@ -3,9 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { amountToYocto, mountUI, TESTNET_RECIPIENT } from "../ui/controller.mjs";
 import {
-  createGuardedMeteorConnector,
-  METEOR_EXECUTOR_URL,
-  METEOR_WALLET_ID,
+  createMeteorConnectAdapter,
   mountLocalUI,
 } from "../ui/main.mjs";
 import {
@@ -172,35 +170,7 @@ function makeDocument() {
 }
 
 class FakeWindow {
-  constructor() { this.listeners = new Map(); }
-  addEventListener(type, listener, capture = false) {
-    const listeners = this.listeners.get(type) || [];
-    listeners.push({ listener, capture: capture === true });
-    this.listeners.set(type, listeners);
-  }
-  removeEventListener(type, listener, capture = false) {
-    const listeners = this.listeners.get(type) || [];
-    this.listeners.set(type, listeners.filter((entry) => entry.listener !== listener
-      || entry.capture !== (capture === true)));
-  }
-  dispatch(type, values = {}) {
-    let stopped = false;
-    const event = {
-      ...values,
-      type,
-      stopImmediatePropagation() { stopped = true; },
-      preventDefault() {},
-    };
-    const listeners = this.listeners.get(type) || [];
-    for (const capture of [true, false]) {
-      for (const entry of listeners) {
-        if (entry.capture !== capture) continue;
-        entry.listener(event);
-        if (stopped) return event;
-      }
-    }
-    return event;
-  }
+  constructor() { this.location = { origin: "http://127.0.0.1:4173" }; }
 }
 
 function makeConnectedWallet(calls, getAccounts = async () => [
@@ -242,21 +212,23 @@ test("converts decimal NEAR exactly and enforces positive amount and 0.1 NEAR ca
   assert.throws(() => amountToYocto("0.0000000000000000000000001"), /plain decimal/);
 });
 
-test("discloses third-party executor risk before Connect and RPC data use before preflight", () => {
+test("discloses Meteor SDK sign-in scope, separate transfer review, and RPC data use", () => {
   const markup = readFileSync(new URL("../ui/index.html", import.meta.url), "utf8");
-  const riskIndex = markup.indexOf('id="executor-risk-disclosure"');
+  const riskIndex = markup.indexOf('id="meteor-sdk-disclosure"');
   const connectIndex = markup.indexOf('id="connect-wallet"');
   const rpcIndex = markup.indexOf('id="rpc-disclosure"');
   const preflightIndex = markup.indexOf('id="run-preflight"');
-  assert.ok(riskIndex >= 0 && riskIndex < connectIndex, "executor risk must precede Connect");
+  assert.ok(riskIndex >= 0 && riskIndex < connectIndex, "SDK scope must precede Connect");
   assert.ok(rpcIndex >= 0 && rpcIndex < preflightIndex, "RPC disclosure must precede preflight");
   const riskDisclosure = markup.slice(riskIndex, connectIndex);
-  assert.match(riskDisclosure, /Meteor's executor.*pinned to commit <code>6369ad7<\/code>/i);
-  assert.match(riskDisclosure, /requests wallet account sign-in/i);
-  assert.match(riskDisclosure, /storage permission.*meteorCom.*meteorComV2/i);
-  assert.match(riskDisclosure, /executor is unaudited/i);
-  assert.match(riskDisclosure, /cannot guarantee that its code is limited to the displayed intent/i);
-  assert.match(riskDisclosure, /declares NEAR Connect's single-transaction sign-and-send feature/i);
+  assert.match(riskDisclosure, /@meteorwallet\/sdk/i);
+  assert.match(riskDisclosure, /requests only ordinary NEAR Testnet account sign-in/i);
+  assert.match(riskDisclosure, /does not request a function-call key, a message signature, or a transaction/i);
+  assert.match(riskDisclosure, /fixed self-transfer is a separate flow/i);
+  assert.match(riskDisclosure, /live transfer has not been tested/i);
+  assert.match(markup, /Testnet account record saved by Meteor SDK/i);
+  assert.match(markup, /not a live wallet account list/i);
+  assert.match(markup, /not proof of current wallet ownership/i);
   const rpcDisclosure = markup.slice(rpcIndex, preflightIndex);
   assert.match(rpcDisclosure, /If the local guard returns ALLOW.*selected public account ID to <code>https:\/\/rpc\.testnet\.near\.org<\/code> for a read-only account lookup/i);
   assert.match(rpcDisclosure, /WARN or BLOCK stops before that RPC read/i);
@@ -327,126 +299,177 @@ test("UI does not connect on mount and runs only read-only preflight after an ex
   assert.equal(calls.signTransaction, 0);
 });
 
-test("entry point lazily creates a testnet connector with only the pinned Meteor executor", async () => {
-  const calls = {
-    moduleLoad: 0,
-    construct: 0,
-    connect: 0,
-    injectedHandler: 0,
-    getAccounts: 0,
-    connectorWallet: 0,
-    signAndSendTransaction: 0,
-    signAndSendTransactions: 0,
-    signTransaction: 0,
+test("entry point lazy loads Meteor SDK and requests ordinary sign-in only after an explicit click", async () => {
+  const calls = { moduleLoad: 0, construct: 0, initialize: 0, actions: [], prompts: [], getAccount: 0 };
+  const storage = { async getItem() { return null; }, async setItem() {}, async removeItem() {} };
+  const signedInAccount = {
+    identifier: { blockchain: "near", network: "testnet", accountId: "sample.testnet" },
   };
+  class StubMeteorConnect {
+    constructor() { calls.construct += 1; }
+    async initialize(options) {
+      calls.initialize += 1;
+      calls.initializeOptions = options;
+    }
+    async createAction(request) {
+      calls.actions.push(request);
+      return {
+        async promptForExecution() {
+          calls.prompts.push(request.id);
+          if (request.id !== "near::sign_in") throw new Error("Unexpected action in sign-in test");
+          calls.storedAccount = signedInAccount;
+          return signedInAccount;
+        },
+      };
+    }
+    async getAccount(identifier) {
+      calls.getAccount += 1;
+      const account = calls.storedAccount;
+      return account?.identifier.blockchain === identifier.blockchain
+        && account.identifier.network === identifier.network
+        && account.identifier.accountId === identifier.accountId
+        ? account
+        : undefined;
+    }
+  }
   const document = makeDocument();
   const windowObject = new FakeWindow();
-  const wallet = makeConnectedWallet(calls);
-  let connectorOptions;
-  class StubNearConnector {
-    constructor(options) {
-      calls.construct += 1;
-      connectorOptions = options;
-      this.network = options.network;
-      wallet.manifest = options.manifest.wallets[0];
-      this.handlers = new Map();
-      windowObject.addEventListener("near-wallet-injected", () => { calls.injectedHandler += 1; });
-      windowObject.addEventListener("message", () => { calls.injectedHandler += 1; });
-    }
-    async connect(options) {
-      calls.connect += 1;
-      calls.connectOptions = options;
-      return wallet;
-    }
-    on(event, callback) { this.handlers.set(event, callback); }
-  }
   mountLocalUI({
     document,
     windowObject,
-    async loadConnector() {
+    async loadMeteorSdk() {
       calls.moduleLoad += 1;
-      return { NearConnector: StubNearConnector };
+      return { MeteorConnect: StubMeteorConnect, webpage_local_storage: storage };
     },
   });
 
   assert.equal(document.elements.get("#connect-wallet").disabled, false);
   assert.equal(calls.moduleLoad, 0);
   assert.equal(calls.construct, 0);
-  assert.equal(calls.connect, 0);
-  assert.equal(calls.getAccounts, 0);
+  assert.equal(calls.initialize, 0);
+  assert.equal(calls.actions.length, 0);
+  assert.equal(calls.getAccount, 0);
   await document.elements.get("#connect-wallet").emit("click");
+
   assert.equal(calls.moduleLoad, 1);
   assert.equal(calls.construct, 1);
-  assert.equal(calls.connect, 1);
-  assert.deepEqual(calls.connectOptions, { walletId: METEOR_WALLET_ID });
-  assert.equal(connectorOptions.network, "testnet");
-  assert.equal(connectorOptions.autoConnect, false);
-  assert.equal(connectorOptions.cspNonce, "test-csp-nonce");
-  assert.deepEqual(connectorOptions.manifest.wallets.map(({ id }) => id), [METEOR_WALLET_ID]);
-  assert.equal(connectorOptions.manifest.wallets[0].executor, METEOR_EXECUTOR_URL);
-  assert.equal(connectorOptions.manifest.wallets[0].features.testnet, true);
-  assert.equal(connectorOptions.manifest.wallets[0].features.signAndSendTransaction, true);
-  assert.equal(calls.getAccounts, 1);
-  assert.equal(document.elements.get("#account-select").disabled, false);
+  assert.equal(calls.initialize, 1);
+  assert.equal(calls.initializeOptions.storage, storage);
+  assert.equal(calls.initializeOptions.mobileBridge.enabled, false);
+  assert.equal(calls.initializeOptions.mobileBridge.autoOpenPairedWallet, false);
+  assert.deepEqual(calls.initializeOptions.mobileBridge.partnerMetadata, {
+    name: "Sentinel Guard Local Testnet Demo",
+    description: "NEAR Testnet account sign-in and fixed-transfer review",
+    originUrl: "http://127.0.0.1:4173",
+  });
+  assert.deepEqual(calls.initializeOptions.mobileBridge.transferAccounts, { enabled: false });
+  assert.deepEqual(calls.initializeOptions.mobileBridge.newKeyTransfer, { enabled: false });
+  assert.deepEqual(calls.actions, [{
+    id: "near::sign_in",
+    input: { target: { blockchain: "near", network: "testnet" } },
+  }]);
+  assert.equal(Object.hasOwn(calls.actions[0].input, "addFunctionCallKey"), false);
+  assert.deepEqual(calls.prompts, ["near::sign_in"]);
+  assert.equal(calls.actions.some(({ id }) => id === "near::sign_transactions"), false);
+  assert.equal(calls.getAccount, 2);
+  assert.equal(document.elements.get("#account-select").children.length, 1);
+  assert.equal(document.elements.get("#account-select").value, "sample.testnet");
   assert.equal(document.elements.get("#run-preflight").disabled, false);
-  assert.equal(calls.injectedHandler || 0, 0);
-  assert.equal(calls.connectorWallet, 0);
-  assert.equal(calls.signAndSendTransaction + calls.signAndSendTransactions + calls.signTransaction, 0);
 });
 
-for (const [label, inject] of [
-  ["CustomEvent", (windowObject) => windowObject.dispatch("near-wallet-injected", {
-    detail: { manifest: { id: METEOR_WALLET_ID } },
-  })],
-  ["parent-frame message", (windowObject) => windowObject.dispatch("message", {
-    data: { type: "near-wallet-injected", manifest: { id: METEOR_WALLET_ID } },
-  })],
-]) {
-  test(`blocks and rejects same-ID injected provider via ${label}`, async () => {
-    const windowObject = new FakeWindow();
-    const calls = { connectorInjectionHandler: 0, connectOptions: null };
-    let pinnedManifest;
-    class StubNearConnector {
-      constructor(options) {
-        this.network = options.network;
-        pinnedManifest = options.manifest.wallets[0];
-        windowObject.addEventListener("near-wallet-injected", () => { calls.connectorInjectionHandler += 1; });
-        windowObject.addEventListener("message", (event) => {
-          if (event.data?.type === "near-wallet-injected") calls.connectorInjectionHandler += 1;
-        });
-      }
-      on() {}
-      async connect(options) {
-        calls.connectOptions = options;
-        inject(windowObject);
-        return { manifest: pinnedManifest, async getAccounts() { return []; } };
-      }
-    }
-    const connector = createGuardedMeteorConnector({ NearConnector: StubNearConnector, windowObject });
-    await assert.rejects(connector.connect(), /wallet-injected provider was blocked/);
-    assert.deepEqual(calls.connectOptions, { walletId: METEOR_WALLET_ID });
-    assert.equal(calls.connectorInjectionHandler, 0, "NearConnector must not receive the injected event");
-  });
-}
-
-test("rejects a returned provider with a cloned Meteor ID/manifest instead of the pinned manifest object", async () => {
-  const windowObject = new FakeWindow();
-  let pinnedManifest;
-  class StubNearConnector {
-    constructor(options) {
-      this.network = options.network;
-      pinnedManifest = options.manifest.wallets[0];
-    }
-    on() {}
-    async connect() {
+test("mocked fixed transfer uses the Testnet account record saved by Meteor SDK only after ALLOW and review", async () => {
+  const calls = { actions: [], prompts: [], getAccount: 0 };
+  const signedInAccount = {
+    identifier: {
+      blockchain: "near",
+      network: "testnet",
+      accountId: TESTNET_SELF_TRANSFER_ACCOUNT,
+    },
+  };
+  class StubMeteorConnect {
+    async initialize() {}
+    async createAction(request) {
+      calls.actions.push(request);
       return {
-        manifest: { ...pinnedManifest },
-        async getAccounts() { return []; },
+        async promptForExecution() {
+          calls.prompts.push(request.id);
+          if (request.id === "near::sign_in") {
+            calls.storedAccount = signedInAccount;
+            return signedInAccount;
+          }
+          return [{ mockOnly: true }];
+        },
       };
     }
+    async getAccount(identifier) {
+      calls.getAccount += 1;
+      const account = calls.storedAccount;
+      return account?.identifier.blockchain === identifier.blockchain
+        && account.identifier.network === identifier.network
+        && account.identifier.accountId === identifier.accountId
+        ? account
+        : undefined;
+    }
   }
-  const connector = createGuardedMeteorConnector({ NearConnector: StubNearConnector, windowObject });
-  await assert.rejects(connector.connect(), /unexpected provider/);
+  const adapter = createMeteorConnectAdapter({
+    MeteorConnect: StubMeteorConnect,
+    webpage_local_storage: {},
+    windowObject: new FakeWindow(),
+  });
+  const document = makeDocument();
+  document.elements.get("#previous-interactions").value = "3";
+  document.elements.get("#account-age-days").value = "365";
+  const result = await makeSelfTransferResult();
+  mountUI({
+    createConnector: () => adapter,
+    document,
+    connectionEnabled: true,
+    async fetchImpl() { return { ok: true, async json() { return result; } }; },
+  });
+
+  assert.equal(calls.actions.length, 0, "mount must not initialize or connect to Meteor");
+  await document.elements.get("#connect-wallet").emit("click");
+  assert.deepEqual(calls.prompts, ["near::sign_in"]);
+  assert.equal(calls.actions.some(({ id }) => id === "near::sign_transactions"), false);
+
+  await document.elements.get("#prepare-self-transfer").emit("click");
+  assert.equal(document.elements.get("#transfer-review").hidden, false);
+  assert.deepEqual(calls.prompts, ["near::sign_in"], "ALLOW and review must not open a transaction prompt");
+  assert.equal(calls.actions.some(({ id }) => id === "near::sign_transactions"), false);
+
+  await document.elements.get("#sign-self-transfer").emit("click");
+  assert.deepEqual(calls.prompts, ["near::sign_in", "near::sign_transactions"]);
+  const transactionRequest = calls.actions.find(({ id }) => id === "near::sign_transactions");
+  assert.ok(transactionRequest);
+  assert.deepEqual(transactionRequest.input.target, {
+    blockchain: "near",
+    network: "testnet",
+    accountId: TESTNET_SELF_TRANSFER_ACCOUNT,
+  });
+  assert.equal(transactionRequest.input.useFunctionCallKey, false);
+  assert.equal(transactionRequest.input.transactions.length, 1);
+  const [transaction] = transactionRequest.input.transactions;
+  assert.equal(transaction.receiverId, TESTNET_SELF_TRANSFER_ACCOUNT);
+  assert.equal(transaction.actions.length, 1);
+  assert.equal(transaction.actions[0].enum, "transfer");
+  assert.equal(transaction.actions[0].transfer.deposit, BigInt(TESTNET_SELF_TRANSFER_AMOUNT_YOCTO));
+});
+
+test("Meteor SDK adapter rejects a non-Testnet sign-in result", async () => {
+  class MainnetMeteorConnect {
+    async initialize() {}
+    async createAction() {
+      return { async promptForExecution() {
+        return { identifier: { blockchain: "near", network: "mainnet", accountId: "sample.near" } };
+      } };
+    }
+  }
+  const adapter = createMeteorConnectAdapter({
+    MeteorConnect: MainnetMeteorConnect,
+    webpage_local_storage: {},
+    windowObject: new FakeWindow(),
+  });
+  await assert.rejects(adapter.connect(), /NEAR Testnet account/);
 });
 
 test("leaves unknown risk context out instead of inventing history", async () => {
@@ -560,7 +583,7 @@ test("fixed self-transfer fails closed for mismatched account, network, receiver
   }
 });
 
-test("the self-transfer sender comes from the live wallet account list, not the server request", async () => {
+test("the controller rejects a server account absent from its adapter's Testnet account record", async () => {
   const result = await makeSelfTransferResult();
   const app = await makeSelfTransferApp({
     result,
