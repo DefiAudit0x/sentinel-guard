@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "default": "deny",
+  "allowed_recipients": ["defiaudit0x.testnet"],
+  "max_amount_yocto": "100000000000000000000000"
+}

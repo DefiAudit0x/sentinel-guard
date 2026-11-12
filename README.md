@@ -14,7 +14,7 @@ AI agents and automated applications operating on NEAR need to execute transfers
 ## How to try it
 
 1. **Verify the test suite**:
-   Clone the repository and run `./scripts/verify.sh` — `pytest` and `unittest` execute the unit, boundary, integration, failure, and property test suites with zero network dependencies and report all checks passing.
+   Follow the complete command sequence in [Quick start](#quick-start-from-a-clean-clone) below. It creates the virtual environment, installs the Python and Node dependencies, then runs the local verification suite without live network access.
 
 2. **Run local CLI demo**:
    Run `python3 examples/local_demo.py` — the CLI evaluates three deterministic NEAR transaction scenarios (safe transfer, above-threshold warning, and explicit policy/malicious recipient block) and prints the unified decision, status, policy evaluation, risk score, and reasons for each scenario.
@@ -83,34 +83,25 @@ Sentinel Guard addresses key attack vectors facing automated agents and NEAR app
 ## Requirements
 
 - Python 3.12 or newer
-- Node.js 18 or newer for the local JavaScript bridge and its tests
-- Node.js 20.19 or newer (or 22.12 or newer) and npm for the browser UI build
+- Node.js 20.19 or newer, or 22.12 or newer, and npm
 - No third-party Python packages are required to run the application; `pytest` is needed for the full test suite.
 
-## Set up
+## Quick start from a clean clone
 
 ```bash
+git clone https://github.com/DefiAudit0x/sentinel-guard.git
+cd sentinel-guard
 python3 -m venv .venv
-source .venv/bin/activate
-```
-
-For the browser UI and complete verification script, install the exact Node dependencies from the lockfile:
-
-```bash
+.venv/bin/python -m pip install pytest
 npm ci
+./scripts/verify.sh
 ```
 
-VS Code is configured to use `.venv/bin/python` and its built-in `unittest` support.
+Use `python3` backed by Python 3.12 or newer and Node.js 20.19 or newer (or 22.12 or newer). `npm ci` installs the exact JavaScript dependencies from the lockfile. VS Code is configured to use `.venv/bin/python` and its built-in `unittest` support.
 
 ## Run the tests
 
-Install pytest inside the virtual environment:
-
-```bash
-.venv/bin/python -m pip install pytest
-```
-
-Run all tests:
+After completing Quick start, you can run individual test suites:
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -131,7 +122,7 @@ You can also invoke the script by its absolute path from outside the project dir
 /workspace/sentinel-guard/scripts/verify.sh
 ```
 
-The script finds the project root from its own location, uses the existing `.venv/bin/python`, runs the Node tests, and builds the UI bundle. It does not install dependencies or connect to the internet; pytest must already be available in the virtual environment and `npm ci` must have been run for the UI build.
+The script finds the project root from its own location, uses the existing `.venv/bin/python`, runs the Node tests, and builds the UI bundle. It does not install dependencies or connect to the internet; `pytest` and the dependencies installed by `npm ci` must already be available.
 
 ## Example
 
@@ -191,6 +182,16 @@ Run `node examples/guarded_agent_bridge.js` for a small JavaScript-to-Python exa
 
 This bridge accepts only a simple native `transfer` with a valid recipient and `amount_yocto` as a decimal string, plus the simulator's listed risk-context fields. An explicit `resource` must match that recipient; a missing or invalid recipient, mismatch, unsupported action, or extra transaction field is rejected before evaluation. It does not parse NEAR transaction payloads or support contract calls. It is a local demo only: no NEAR integration, network access, wallet, private key, real signing, or broadcast is used. The callback returns a `MOCK-ONLY` marker, not a signature.
 
+#### Local red-team bridge demo
+
+Run the deterministic, synthetic-input check from the project root:
+
+```bash
+node examples/guarded_agent_red_team_demo.js
+```
+
+Expected result: all five checks pass and the output ends with `Overall: PASS`. One fictional allowed transfer reaches the mock callback once, which returns a `MOCK-ONLY` marker. An altered recipient and an amount above the policy cap return `BLOCK`; malformed adapter JSON and an inconsistent adapter intent hash fail closed with `BRIDGE_ERROR`. None of those four cases reaches the mock callback. This local demonstration does not sign or submit transactions and does not establish that an actual signer or executor is constrained.
+
 #### Local JSON spending policy
 
 The JSON adapter requires an explicit local policy file selected by `SENTINEL_GUARD_POLICY_FILE`. Its strict version-1 schema is:
@@ -208,13 +209,13 @@ The JSON adapter requires an explicit local policy file selected by `SENTINEL_GU
 
 ### Local NEAR testnet wallet UI
 
-The local browser app uses the maintained [`@hot-labs/near-connect`](https://docs.near.org/web3-apps/tutorials/wallet-login) package and the existing read-only testnet preflight. Install its locked dependencies with `npm ci`, then run from the repository root:
+The local browser app uses the maintained [`@hot-labs/near-connect`](https://docs.near.org/web3-apps/tutorials/wallet-login) package and the existing read-only testnet preflight. After installing dependencies with `npm ci`, run from the repository root:
 
 ```bash
-SENTINEL_GUARD_POLICY_FILE=/workspace/sentinel-guard-policy.testnet.json npm run ui
+SENTINEL_GUARD_POLICY_FILE="$PWD/examples/ui_demo_policy.json" npm run ui
 ```
 
-Open `http://127.0.0.1:4173/`. The server binds only to loopback; it serves the built `dist/` assets and does not expose the configured policy file. If the default port is occupied, set `SENTINEL_GUARD_UI_PORT` to another local port. The policy path is read only from `SENTINEL_GUARD_POLICY_FILE` and must be outside the static UI directory.
+Open `http://127.0.0.1:4173/`. The server binds only to loopback; it serves the built `dist/` assets and does not expose the configured policy file. If the default port is occupied, set `SENTINEL_GUARD_UI_PORT` to another local port. The policy path is read only from `SENTINEL_GUARD_POLICY_FILE` and must be outside the static UI directory. [`examples/ui_demo_policy.json`](examples/ui_demo_policy.json) is a public demo policy for the server's fixed `defiaudit0x.testnet` recipient and 0.1 NEAR cap; it is not a user's spending policy. The separate [`examples/test_policy.json`](examples/test_policy.json) remains bridge-test fixture data.
 
 The Connect button is enabled only for a locally constructed Meteor-only manifest. Its executor is pinned to immutable repository commit `6369ad789d2f3aaf8e6ccb065021723111027174`; the wallet icon is an image from the same GitHub repository's `main` path and is not executable code. Because `@hot-labs/near-connect` 0.12.0 can replace a same-ID manifest wallet when it receives `near-wallet-injected`, the app installs capture-phase guards for both the injected CustomEvent and the parent-frame message before constructing the connector, then accepts only a returned wallet whose manifest is the exact pinned object. It selects `meteor-wallet` directly, without a picker, and keeps `autoConnect` disabled. A detected injection or unexpected provider fails closed. Connector loading and construction occur only after the user clicks Connect.
 

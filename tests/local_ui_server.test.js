@@ -5,11 +5,13 @@ const fs = require("node:fs");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
+const { Readable } = require("node:stream");
 const test = require("node:test");
 const {
   FIXED_RECIPIENT,
   assertPrivatePolicyPath,
   createLocalUiServer,
+  readJsonBody,
   validateLocalRequest,
 } = require("../app/local_ui_server.js");
 const {
@@ -215,10 +217,58 @@ test("rejects cross-origin requests and never serves files outside the UI asset 
 });
 
 test("policy path must be absolute and outside the generated static UI directory", () => {
-  const staticRoot = path.join(os.tmpdir(), "sentinel-ui-public");
-  assert.throws(() => assertPrivatePolicyPath(undefined, staticRoot), /absolute local policy path/);
-  assert.throws(() => assertPrivatePolicyPath(path.join(staticRoot, "assets", "policy.json"), staticRoot), /must not be inside/);
-  assert.doesNotThrow(() => assertPrivatePolicyPath(path.join(os.tmpdir(), "private-policy.json"), staticRoot));
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-ui-public-"));
+  const staticRoot = path.join(temp, "public");
+  const policyInsideStatic = path.join(staticRoot, "assets", "policy.json");
+  const privatePolicy = path.join(temp, "private-policy.json");
+  fs.mkdirSync(path.dirname(policyInsideStatic), { recursive: true });
+  fs.writeFileSync(policyInsideStatic, "{}", { mode: 0o600 });
+  fs.writeFileSync(privatePolicy, "{}", { mode: 0o600 });
+  try {
+    assert.throws(() => assertPrivatePolicyPath(undefined, staticRoot), /absolute local policy path/);
+    assert.throws(() => assertPrivatePolicyPath(policyInsideStatic, staticRoot), /must not be inside/);
+    assert.doesNotThrow(() => assertPrivatePolicyPath(privatePolicy, staticRoot));
+    assert.throws(
+      () => assertPrivatePolicyPath(path.join(temp, "missing-policy.json"), staticRoot),
+      /resolve to existing real paths/,
+    );
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("an external policy symlink into static assets prevents serving policy content", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-ui-policy-link-"));
+  const staticRoot = path.join(temp, "public");
+  const policyAsset = path.join(staticRoot, "assets", "private-policy.json");
+  const externalPolicyLink = path.join(temp, "configured-policy.json");
+  const policyContents = '{"version":1,"default":"deny","allowed_recipients":[]}';
+  fs.mkdirSync(path.dirname(policyAsset), { recursive: true });
+  fs.writeFileSync(policyAsset, policyContents, { mode: 0o600 });
+  fs.symlinkSync(policyAsset, externalPolicyLink);
+  try {
+    assert.equal(fs.realpathSync(externalPolicyLink), fs.realpathSync(policyAsset));
+    assert.throws(
+      () => assertPrivatePolicyPath(externalPolicyLink, staticRoot),
+      /must not be inside/,
+    );
+    assert.throws(
+      () => createLocalUiServer({ staticRoot, policyPath: externalPolicyLink }),
+      /must not be inside/,
+    );
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("readJsonBody rejects oversized bodies and non-JSON content types directly", async () => {
+  const oversizedRequest = Readable.from([Buffer.alloc(8193, 0x20)]);
+  oversizedRequest.headers = { "content-type": "application/json" };
+  await assert.rejects(readJsonBody(oversizedRequest), (error) => error.status === 413);
+
+  const nonJsonRequest = Readable.from([Buffer.from("{}")]);
+  nonJsonRequest.headers = { "content-type": "text/plain" };
+  await assert.rejects(readJsonBody(nonJsonRequest), (error) => error.status === 415);
 });
 
 test("request schema is exact and requires canonical positive values within the cap", () => {

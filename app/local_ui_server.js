@@ -163,8 +163,10 @@ function createLocalUiServer({
   adapterRunner = (serializedRequest) => runPythonAdapter(serializedRequest),
   fetchImpl = globalThis.fetch,
   staticRoot = DEFAULT_STATIC_ROOT,
+  policyPath,
 } = {}) {
   const root = path.resolve(staticRoot);
+  if (policyPath !== undefined) assertPrivatePolicyPath(policyPath, root);
   return http.createServer(async (request, response) => {
     try {
       assertLoopbackRequest(request);
@@ -269,9 +271,17 @@ function assertPrivatePolicyPath(policyPath, staticRoot = DEFAULT_STATIC_ROOT) {
   if (typeof policyPath !== "string" || !path.isAbsolute(policyPath)) {
     throw new TypeError(`${POLICY_ENV_VAR} must name an absolute local policy path.`);
   }
-  const resolvedPolicy = path.resolve(policyPath);
-  const relative = path.relative(path.resolve(staticRoot), resolvedPolicy);
-  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+  let staticRootReal;
+  let policyPathReal;
+  try {
+    staticRootReal = fs.realpathSync.native(path.resolve(staticRoot));
+    policyPathReal = fs.realpathSync.native(path.resolve(policyPath));
+  } catch {
+    throw new TypeError(`${POLICY_ENV_VAR} and the UI static directory must resolve to existing real paths.`);
+  }
+  const relative = path.relative(staticRootReal, policyPathReal);
+  if (relative === "" || (relative !== ".."
+    && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))) {
     throw new TypeError("The local policy file must not be inside the UI static directory.");
   }
 }
@@ -281,7 +291,7 @@ function main() {
   try {
     assertPrivatePolicyPath(policyPath);
     const port = configuredPort();
-    const server = createLocalUiServer();
+    const server = createLocalUiServer({ policyPath });
     server.listen(port, LOOPBACK_HOST, () => {
       console.log(`Sentinel Guard local UI: http://${LOOPBACK_HOST}:${port}/`);
       console.log("Loopback only · NEAR testnet · application preflight has no signing or submission call");
@@ -299,6 +309,7 @@ module.exports = {
   assertPrivatePolicyPath,
   configuredPort,
   createLocalUiServer,
+  readJsonBody,
   resolveStaticFile,
   validateLocalRequest,
 };

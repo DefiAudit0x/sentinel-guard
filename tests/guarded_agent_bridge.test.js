@@ -463,6 +463,31 @@ test("real policy denies an over-cap amount before the mock signer", () => {
   assert.equal(result.mockSignature, null);
 });
 
+test("local red-team demo allows only the mock callback and fails closed on attacks", () => {
+  const { runDemo } = require("../examples/guarded_agent_red_team_demo.js");
+  const results = runDemo();
+  const byLabel = new Map(results.map((result) => [result.label, result]));
+
+  assert.equal(results.length, 5);
+  assert.ok(results.every((result) => result.passed));
+  assert.equal(byLabel.get("fictional allowed transfer").mockCallbackCalls, 1);
+  assert.match(
+    byLabel.get("fictional allowed transfer").mockCallbackResult,
+    /^MOCK-ONLY \(not a signature\): alice\.near$/,
+  );
+  for (const label of [
+    "altered recipient",
+    "amount above the policy cap",
+    "malformed adapter JSON",
+    "inconsistent adapter intent hash",
+  ]) {
+    assert.equal(byLabel.get(label).mockCallbackCalls, 0, `${label} must not reach callback`);
+    assert.equal(byLabel.get(label).mockCallbackResult, null);
+  }
+  assert.equal(byLabel.get("altered recipient").policyReason, "recipient_not_allowed");
+  assert.equal(byLabel.get("amount above the policy cap").policyReason, "amount_limit_exceeded");
+});
+
 test("missing policy configuration fails closed before the mock signer", () => {
   const request = makeRequest("actual-missing-policy-test");
   let signerCalls = 0;

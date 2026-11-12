@@ -1,15 +1,17 @@
 {
   "name": "Sentinel Guard",
-  "description": "A local-first, deterministic transaction security and policy evaluation framework for NEAR applications and autonomous AI agents. Sentinel Guard combines exact-match policy enforcement with rule-based transaction risk analysis to produce explainable ALLOW, WARN, or BLOCK decisions before any NEAR transaction is signed.",
-  "problem": "AI agents and automated applications operating on NEAR need to execute transfers and contract calls without exposing user treasuries to unauthorized actions, drained funds, or recently mutated smart contracts. Relying on probabilistic LLM prompts for spending security is brittle, while scattering ad-hoc checks across application code makes security decisions opaque, hard to audit, and impossible to reproduce deterministically.",
+  "description": "A local-first prototype for evaluating simple NEAR native-transfer intents. It combines exact-match, default-deny recipient and amount policies with experimental risk heuristics, and returns explainable ALLOW, WARN, or BLOCK results through a bounded JSON and JavaScript/Python bridge. It also includes a local UI and a NEAR Testnet preflight that reads account state only after local ALLOW. It does not verify caller-provided risk context, constrain a downstream signer, sign transactions, or submit them; its result is not a safety guarantee.",
+  "problem": "AI applications need predictable, auditable checks on proposed payment intents. Prompt-only spending rules are probabilistic, while scattered application checks are difficult to test consistently. Sentinel Guard explores a local policy-and-risk layer for a narrow NEAR native-transfer flow and makes explicit that caller-provided context and an unenforced result can be bypassed.",
   "links": {
     "live": [],
     "contracts": []
   },
   "userFlow": [
-    "Clone the repository and run ./scripts/verify.sh — pytest and unittest execute the unit, boundary, integration, failure, and property test suites with zero network dependencies and report all checks passing",
-    "Run python3 examples/local_demo.py — the CLI evaluates three deterministic NEAR transaction scenarios (safe transfer, above-threshold warning, and explicit policy/malicious recipient block) and prints the unified decision, status, policy evaluation, risk score, and reasons for each scenario",
-    "Import simulate_transaction, PolicyEngine, PolicyRule, and simulation_result_to_json from sentinel_guard — evaluate proposed action/resource pairs and transaction context locally with fail-closed guarantees before signing"
+    "From a clean clone, follow the README Quick start: use Python 3.12 or newer, create .venv, install pytest, run npm ci, then run ./scripts/verify.sh. Expected: the local Python and Node test suites pass and the Vite UI bundle builds. Test cases use local fixtures and mocks; installing dependencies requires internet access.",
+    "Run python3 examples/local_demo.py. Expected: deterministic ALLOW, WARN, and BLOCK results for the included synthetic scenarios. The known_malicious flag is supplied by the example caller and is not checked against an external reputation source.",
+    "Run .venv/bin/python examples/guarded_agent_mock.py and node examples/guarded_agent_bridge.js. Expected: the labeled MOCK-ONLY callback is reached only for a consistent COMPLETED plus ALLOW result; this is not a real signer.",
+    "Run node examples/guarded_agent_red_team_demo.js. Expected: all five synthetic checks pass; one allowed transfer reaches the MOCK-ONLY callback once, while altered-recipient, above-cap, malformed adapter JSON, and inconsistent adapter intent-hash cases do not reach it. The demo does not sign or submit transactions and does not show enforcement against an actual signer.",
+    "Optionally follow the README instructions for the local UI and NEAR Testnet read-only preflight. After the user's explicit wallet connection and a local ALLOW, the preflight reads a testnet account snapshot and returns PREPARED_NOT_SUBMITTED. The UI tests use mocked wallets and RPC; the third-party Meteor executor has not been independently audited. The application has no transaction-signing or submission path."
   ],
   "media": {
     "videos": [],
