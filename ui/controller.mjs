@@ -63,6 +63,8 @@ export function mountUI({
   fetchImpl = globalThis.fetch,
   connectionEnabled = false,
   clock = () => Date.now(),
+  monotonicClock = () => globalThis.performance?.now?.(),
+  windowObject = globalThis.window,
   cryptoObject = globalThis.crypto,
 }) {
   if (typeof createConnector !== "function") {
@@ -71,6 +73,7 @@ export function mountUI({
   if (!document || typeof document.querySelector !== "function") {
     throw new TypeError("A document is required.");
   }
+  if (typeof monotonicClock !== "function") throw new TypeError("A monotonic review clock is required.");
   const connectButton = document.querySelector("#connect-wallet");
   const accountSelect = document.querySelector("#account-select");
   const walletStatus = document.querySelector("#wallet-status");
@@ -103,14 +106,32 @@ export function mountUI({
   let busy = false;
   let review = null;
   let reviewedUiSnapshot = null;
+  let uiInputRevision = 0;
+  let lifecycleGeneration = 0;
+  let lifecycleVisible = document.visibilityState !== "hidden" && document.hidden !== true;
+  let lifecycleFocused = true;
+  let lifecyclePageActive = true;
+  let reviewWallClockState = null;
   const attemptedRequestIds = new Set();
   const consumedRequestIds = new Set();
   const canConnect = connectionEnabled === true;
+  const documentHasFocus = () => {
+    if (typeof document.hasFocus !== "function") return true;
+    try {
+      return document.hasFocus() === true;
+    } catch {
+      return false;
+    }
+  };
+  const isLifecycleActive = () => lifecycleVisible && lifecycleFocused
+    && lifecyclePageActive
+    && document.visibilityState !== "hidden" && document.hidden !== true
+    && documentHasFocus();
 
   const updateButtons = () => {
     connectButton.disabled = !canConnect || busy || connected;
     preflightButton.disabled = busy || !connected;
-    prepareSelfTransferButton.disabled = busy || !connected;
+    prepareSelfTransferButton.disabled = busy || !connected || !isLifecycleActive();
     signSelfTransferButton.disabled = busy || !review || attemptedRequestIds.has(review.requestId);
     cancelSelfTransferButton.disabled = busy || !review;
   };
@@ -122,11 +143,56 @@ export function mountUI({
     if (review) consumedRequestIds.add(review.requestId);
     review = null;
     reviewedUiSnapshot = null;
+    reviewWallClockState = null;
     transferReview.hidden = true;
     signSelfTransferButton.disabled = true;
     cancelSelfTransferButton.disabled = true;
     if (message) setText(reviewStatus, message);
   };
+  const invalidateForLifecycle = (message) => {
+    lifecycleGeneration += 1;
+    discardReview(message);
+    setText(selfTransferStatus, message);
+    updateButtons();
+  };
+  const listen = (target, eventName, listener) => {
+    if (typeof target?.addEventListener === "function") target.addEventListener(eventName, listener);
+  };
+  const refreshVisibleState = () => {
+    lifecycleVisible = document.visibilityState !== "hidden" && document.hidden !== true;
+  };
+  listen(document, "visibilitychange", () => {
+    refreshVisibleState();
+    invalidateForLifecycle(lifecycleVisible
+      ? "Review cancelled when page visibility changed; prepare a fresh review."
+      : "Review cancelled because the page became hidden; prepare a fresh review after returning.");
+  });
+  listen(windowObject, "pagehide", () => {
+    lifecyclePageActive = false;
+    invalidateForLifecycle("Review cancelled because the page was hidden or left; prepare a fresh review after returning.");
+  });
+  listen(windowObject, "pageshow", () => {
+    lifecyclePageActive = true;
+    refreshVisibleState();
+    invalidateForLifecycle("Review cancelled after the page was restored; prepare a fresh review.");
+  });
+  listen(windowObject, "blur", () => {
+    lifecycleFocused = false;
+    invalidateForLifecycle("Review cancelled because the page lost focus; prepare a fresh review after returning.");
+  });
+  listen(windowObject, "focus", () => {
+    lifecycleFocused = true;
+    invalidateForLifecycle("Review cancelled when page focus resumed; prepare a fresh review.");
+  });
+  listen(document, "freeze", () => {
+    lifecyclePageActive = false;
+    invalidateForLifecycle("Review cancelled because the page was suspended; prepare a fresh review after resuming.");
+  });
+  listen(document, "resume", () => {
+    lifecyclePageActive = true;
+    refreshVisibleState();
+    invalidateForLifecycle("Review cancelled after the page resumed; prepare a fresh review.");
+  });
   const resetWallet = () => {
     connected = false;
     wallet = null;
@@ -249,10 +315,35 @@ export function mountUI({
 
   prepareSelfTransferButton.addEventListener("click", async () => {
     if (busy || !connected) return;
+    if (!isLifecycleActive()) {
+      invalidateForLifecycle("The page is not active; return to it and prepare a fresh review.");
+      return;
+    }
     discardReview("Preparing a fresh fixed-intent review; no wallet action has been requested.");
+    const uiSnapshot = {
+      amount: amountInput.value,
+      previousInteractions: previousInput.value,
+      accountAgeDays: ageInput.value,
+      accountId: accountSelect.value,
+    };
+    const uiSnapshotRevision = uiInputRevision;
+    const uiLifecycleGeneration = lifecycleGeneration;
+    const assertUiSnapshotCurrent = () => {
+      if (!isLifecycleActive() || lifecycleGeneration !== uiLifecycleGeneration
+        || uiInputRevision !== uiSnapshotRevision
+        || uiSnapshot.amount !== amountInput.value
+        || uiSnapshot.previousInteractions !== previousInput.value
+        || uiSnapshot.accountAgeDays !== ageInput.value
+        || uiSnapshot.accountId !== accountSelect.value) {
+        throw new Error("A reviewed input changed while preflight was pending; prepare a fresh guarded review.");
+      }
+    };
     let context;
     try {
-      context = readRiskContext(previousInput, ageInput);
+      context = readRiskContext(
+        { value: uiSnapshot.previousInteractions },
+        { value: uiSnapshot.accountAgeDays },
+      );
     } catch (error) {
       setText(selfTransferStatus, error instanceof Error ? error.message : "Invalid risk context.");
       return;
@@ -264,8 +355,9 @@ export function mountUI({
         throw new Error("A signed-in NEAR Testnet account record is required.");
       }
       const savedTestnetAccounts = normalizeAccounts(await wallet.getAccounts({ network: "testnet" }));
+      assertUiSnapshotCurrent();
       const sender = savedTestnetAccounts.find((account) => account.accountId === TESTNET_SELF_TRANSFER_ACCOUNT);
-      if (!sender || accountSelect.value !== sender.accountId) {
+      if (!sender || uiSnapshot.accountId !== sender.accountId) {
         throw new Error(`Select ${TESTNET_SELF_TRANSFER_ACCOUNT} from Meteor SDK's saved Testnet account record first.`);
       }
 
@@ -281,6 +373,7 @@ export function mountUI({
         }),
       });
       const result = await response.json();
+      assertUiSnapshotCurrent();
       if (!response.ok) throw new Error(result.error || `Local preflight failed (${response.status}).`);
       if (result?.guard?.decision !== "ALLOW") {
         setText(selfTransferStatus, `${result?.status || "BLOCKED"} · guard ${result?.guard?.decision || "UNKNOWN"}; no wallet action was requested.`);
@@ -291,18 +384,22 @@ export function mountUI({
         senderAccountId: sender.accountId,
         context,
         now: clock(),
+        clock,
+        monotonicClock,
         cryptoObject,
       });
+      assertUiSnapshotCurrent();
+      const reviewWallNow = clock();
+      if (!Number.isSafeInteger(reviewWallNow) || reviewWallNow < nextReview.createdAt
+        || reviewWallNow >= nextReview.expiresAt) {
+        throw new Error("Transfer review expired or the wall clock moved backward while being displayed.");
+      }
+      reviewWallClockState = { lastObserved: reviewWallNow };
       if (consumedRequestIds.has(nextReview.requestId)) {
         throw new Error("This guard request was already consumed; prepare a fresh review.");
       }
       review = nextReview;
-      reviewedUiSnapshot = {
-        amount: amountInput.value,
-        previousInteractions: previousInput.value,
-        accountAgeDays: ageInput.value,
-        accountId: accountSelect.value,
-      };
+      reviewedUiSnapshot = uiSnapshot;
       const signingParams = review.signingParams;
       transferReview.hidden = false;
       setText(reviewDetails, JSON.stringify({
@@ -324,6 +421,7 @@ export function mountUI({
     } catch (error) {
       transferReview.hidden = true;
       review = null;
+      reviewWallClockState = null;
       setText(selfTransferStatus, error instanceof Error ? error.message : "Self-transfer preflight failed closed.");
     } finally {
       setBusy(false);
@@ -332,7 +430,12 @@ export function mountUI({
 
   signSelfTransferButton.addEventListener("click", async () => {
     if (busy || !review || attemptedRequestIds.has(review.requestId)) return;
+    if (!isLifecycleActive()) {
+      invalidateForLifecycle("The page is not active; the review was cancelled. Prepare a fresh review after returning.");
+      return;
+    }
     const approvedReview = review;
+    const signingLifecycleGeneration = lifecycleGeneration;
     setBusy(true);
     setText(reviewStatus, "Rechecking the exact immutable review and Meteor SDK's saved Testnet account record before opening the wallet…");
     try {
@@ -348,17 +451,45 @@ export function mountUI({
         wallet,
         selectedAccountId: accountSelect.value,
         review: approvedReview,
-        now: clock(),
+        wallClockState: reviewWallClockState,
+        clock,
+        monotonicClock,
         cryptoObject,
       });
       if (review !== approvedReview || consumedRequestIds.has(approvedReview.requestId)) {
         throw new Error("The reviewed intent changed or was cancelled; prepare a fresh review.");
       }
+      if (!isLifecycleActive() || lifecycleGeneration !== signingLifecycleGeneration) {
+        throw new Error("The page lifecycle changed; prepare a fresh guarded review before continuing.");
+      }
+      const signingWallNow = clock();
+      if (!reviewWallClockState || !Number.isSafeInteger(signingWallNow)
+        || signingWallNow < reviewWallClockState.lastObserved
+        || signingWallNow < approvedReview.createdAt
+        || signingWallNow >= approvedReview.expiresAt) {
+        throw new Error("Transfer review expired or the wall clock moved backward; run a fresh preflight before continuing.");
+      }
+      reviewWallClockState.lastObserved = signingWallNow;
+      const signingMonotonicNow = monotonicClock();
+      if (!Number.isFinite(signingMonotonicNow)
+        || signingMonotonicNow < approvedReview.monotonicCreatedAt
+        || signingMonotonicNow >= approvedReview.monotonicExpiresAt) {
+        throw new Error("Transfer review expired; run a fresh preflight before continuing.");
+      }
       attemptedRequestIds.add(approvedReview.requestId);
       consumedRequestIds.add(approvedReview.requestId);
       setText(reviewStatus, "Requesting the wallet’s confirmation for the exact displayed Testnet transfer…");
       // Pass the exact frozen payload reviewed above. Never reconstruct from mutable form fields.
-      await wallet.signAndSendTransaction(approvedReview.signingParams);
+      const reviewDeadline = Object.freeze({
+        createdAt: approvedReview.createdAt,
+        expiresAt: approvedReview.expiresAt,
+        wallClockHighWater: reviewWallClockState.lastObserved,
+        monotonicCreatedAt: approvedReview.monotonicCreatedAt,
+        monotonicExpiresAt: approvedReview.monotonicExpiresAt,
+        isLifecycleActive: () => isLifecycleActive()
+          && lifecycleGeneration === signingLifecycleGeneration,
+      });
+      await wallet.signAndSendTransaction(approvedReview.signingParams, reviewDeadline);
       setText(reviewStatus, "The wallet returned a result. Verify the outcome in the wallet/Testnet before taking any further action.");
     } catch (error) {
       if (attemptedRequestIds.has(approvedReview.requestId)) {
@@ -367,6 +498,7 @@ export function mountUI({
         consumedRequestIds.add(approvedReview.requestId);
         review = null;
         reviewedUiSnapshot = null;
+        reviewWallClockState = null;
         transferReview.hidden = true;
         setText(selfTransferStatus, error instanceof Error ? error.message : "Signing-boundary validation failed closed.");
       }
@@ -384,6 +516,7 @@ export function mountUI({
 
   for (const input of [amountInput, previousInput, ageInput, accountSelect]) {
     const invalidate = () => {
+      uiInputRevision += 1;
       if (!review) return;
       discardReview("Review cancelled because a reviewed input or selected account changed. Run a fresh preflight.");
       setText(selfTransferStatus, "A reviewed value changed; no wallet action was requested.");

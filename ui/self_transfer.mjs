@@ -102,12 +102,14 @@ function validateGuardedIntent(intent, context) {
   }
 }
 
-function bindingMaterial(requestId, intentHash, expiresAt, signingParams) {
+function bindingMaterial(requestId, intentHash, expiresAt, monotonicCreatedAt, monotonicExpiresAt, signingParams) {
   const [action] = signingParams.actions;
   return {
     requestId,
     intentHash,
     expiresAt,
+    monotonicCreatedAt,
+    monotonicExpiresAt,
     network: signingParams.network,
     senderAccountId: signingParams.signerId,
     receiverId: signingParams.receiverId,
@@ -143,9 +145,21 @@ export async function createSelfTransferReview({
   senderAccountId,
   context = {},
   now = Date.now(),
+  clock = () => Date.now(),
+  monotonicClock = () => globalThis.performance?.now?.(),
   cryptoObject = globalThis.crypto,
 }) {
   if (!Number.isSafeInteger(now) || now < 0) throw new TypeError("Review clock value is invalid.");
+  if (typeof clock !== "function") throw new TypeError("A wall review clock is required.");
+  if (typeof monotonicClock !== "function") throw new TypeError("A monotonic review clock is required.");
+  const monotonicCreatedAt = monotonicClock();
+  if (!Number.isFinite(monotonicCreatedAt) || monotonicCreatedAt < 0) {
+    throw new TypeError("A monotonic review clock is unavailable; transfer review is blocked.");
+  }
+  const monotonicExpiresAt = monotonicCreatedAt + SELF_TRANSFER_REVIEW_TTL_MS;
+  if (!Number.isFinite(monotonicExpiresAt) || monotonicExpiresAt <= monotonicCreatedAt) {
+    throw new TypeError("The monotonic review deadline is invalid; transfer review is blocked.");
+  }
   if (senderAccountId !== TESTNET_SELF_TRANSFER_ACCOUNT
     || typeof senderAccountId !== "string" || !ACCOUNT_ID_PATTERN.test(senderAccountId)) {
     throw new Error("The connected Testnet account is not the fixed self-transfer account.");
@@ -193,10 +207,20 @@ export async function createSelfTransferReview({
   });
   validateSigningParams(signingParams, guardedIntent);
   const expiresAt = now + SELF_TRANSFER_REVIEW_TTL_MS;
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= now) {
+    throw new TypeError("The wall-clock review deadline is invalid; transfer review is blocked.");
+  }
   const bindingHash = await sha256Hex(
-    bindingMaterial(requestId, intentHash, expiresAt, signingParams),
+    bindingMaterial(requestId, intentHash, expiresAt, monotonicCreatedAt, monotonicExpiresAt, signingParams),
     cryptoObject,
   );
+  const wallNow = clock();
+  const monotonicNow = monotonicClock();
+  if (!Number.isSafeInteger(wallNow) || wallNow < now || wallNow >= expiresAt
+    || !Number.isFinite(monotonicNow) || monotonicNow < monotonicCreatedAt
+    || monotonicNow >= monotonicExpiresAt) {
+    throw new Error("Transfer review expired while it was being prepared; run a fresh preflight.");
+  }
   return freezeRecursively({
     requestId,
     intentHash,
@@ -206,6 +230,8 @@ export async function createSelfTransferReview({
     balanceYocto: result.account.balanceYocto,
     createdAt: now,
     expiresAt,
+    monotonicCreatedAt,
+    monotonicExpiresAt,
     bindingHash,
   });
 }
@@ -215,7 +241,9 @@ export async function assertSelfTransferSigningBoundary({
   wallet,
   selectedAccountId,
   review,
-  now = Date.now(),
+  wallClockState,
+  clock = () => Date.now(),
+  monotonicClock = () => globalThis.performance?.now?.(),
   cryptoObject = globalThis.crypto,
 }) {
   if (connector?.network !== NETWORK) throw new Error("The connected wallet is not on NEAR Testnet.");
@@ -223,16 +251,44 @@ export async function assertSelfTransferSigningBoundary({
     || typeof wallet.signAndSendTransaction !== "function") {
     throw new Error("The connected wallet cannot provide the required Testnet transfer API.");
   }
+  if (typeof clock !== "function") throw new TypeError("Wall review clock is unavailable.");
+  if (typeof monotonicClock !== "function") throw new TypeError("Monotonic review clock is unavailable.");
   if (!review || !Object.isFrozen(review) || !Object.isFrozen(review.signingParams)
     || !Object.isFrozen(review.signingParams.actions)
     || !Object.isFrozen(review.signingParams.actions[0])
     || !Object.isFrozen(review.signingParams.actions[0]?.params)) {
     throw new Error("Transfer review is missing or its payload is not immutable.");
   }
-  if (!Number.isSafeInteger(now) || now < review.createdAt || now >= review.expiresAt
-    || review.expiresAt - review.createdAt !== SELF_TRANSFER_REVIEW_TTL_MS) {
+  if (!Number.isSafeInteger(review.createdAt) || review.createdAt < 0
+    || !Number.isSafeInteger(review.expiresAt)
+    || review.expiresAt - review.createdAt !== SELF_TRANSFER_REVIEW_TTL_MS
+    || !Number.isFinite(review.monotonicCreatedAt) || review.monotonicCreatedAt < 0
+      || !Number.isFinite(review.monotonicExpiresAt)
+      || review.monotonicExpiresAt <= review.monotonicCreatedAt
+    || review.monotonicExpiresAt !== review.monotonicCreatedAt + SELF_TRANSFER_REVIEW_TTL_MS) {
     throw new Error("Transfer review expired; run a fresh preflight before continuing.");
   }
+  const assertMonotonicReviewActive = () => {
+    const monotonicNow = monotonicClock();
+    if (!Number.isFinite(monotonicNow) || monotonicNow < review.monotonicCreatedAt
+      || monotonicNow >= review.monotonicExpiresAt) {
+      throw new Error("Transfer review expired; run a fresh preflight before continuing.");
+    }
+  };
+  const observedWallClock = wallClockState && typeof wallClockState === "object"
+    ? wallClockState
+    : { lastObserved: review.createdAt };
+  const assertWallReviewActive = () => {
+    const wallNow = clock();
+    if (!Number.isSafeInteger(observedWallClock.lastObserved)
+      || !Number.isSafeInteger(wallNow) || wallNow < observedWallClock.lastObserved
+      || wallNow < review.createdAt || wallNow >= review.expiresAt) {
+      throw new Error("Transfer review expired or the wall clock moved backward; run a fresh preflight before continuing.");
+    }
+    observedWallClock.lastObserved = wallNow;
+  };
+  assertMonotonicReviewActive();
+  assertWallReviewActive();
   if (typeof review.requestId !== "string" || !REQUEST_ID_PATTERN.test(review.requestId)
     || typeof review.intentHash !== "string" || !HASH_PATTERN.test(review.intentHash)
     || typeof review.bindingHash !== "string" || !HASH_PATTERN.test(review.bindingHash)) {
@@ -248,16 +304,26 @@ export async function assertSelfTransferSigningBoundary({
     throw new Error("Selected account changed after review.");
   }
   const expectedBindingHash = await sha256Hex(
-    bindingMaterial(review.requestId, review.intentHash, review.expiresAt, review.signingParams),
+    bindingMaterial(
+      review.requestId,
+      review.intentHash,
+      review.expiresAt,
+      review.monotonicCreatedAt,
+      review.monotonicExpiresAt,
+      review.signingParams,
+    ),
     cryptoObject,
   );
   if (expectedBindingHash !== review.bindingHash) {
     throw new Error("Transfer review binding changed after the local guard decision.");
   }
 
+  assertWallReviewActive();
   const savedTestnetAccounts = await wallet.getAccounts({ network: NETWORK });
   if (!Array.isArray(savedTestnetAccounts)
     || !savedTestnetAccounts.some((account) => account && account.accountId === review.signingParams.signerId)) {
     throw new Error("The exact Testnet sender is no longer in Meteor SDK's saved account record; this is not a live ownership check.");
   }
+  assertMonotonicReviewActive();
+  assertWallReviewActive();
 }

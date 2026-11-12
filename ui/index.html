@@ -86,7 +86,7 @@
         <section id="transfer-review" class="review-panel" aria-labelledby="review-heading" hidden>
           <p class="step">FINAL REVIEW · NO AUTO-SIGN</p>
           <h3 id="review-heading">Review the exact wallet request</h3>
-          <p class="hint">The review is bound to the guard request and expires after two minutes. Check the network, sender, receiver, action and exact amount here and again in the wallet.</p>
+          <p class="hint">The review is bound to the guard request, expires after two minutes using both monotonic and wall clocks, and is cancelled when the page is hidden, loses focus, resumes or is restored. Browsers cannot guarantee detecting every OS sleep if lifecycle signals are missed and both clocks pause. Check the network, sender, receiver, action and exact amount here and again in the wallet.</p>
           <pre id="review-details" aria-live="polite"></pre>
           <p id="review-status" role="status" class="review-status"></p>
           <button id="sign-self-transfer" class="button button-danger" type="button" disabled>Sign &amp; send this exact 0.001 NEAR transfer</button>
