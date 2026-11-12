@@ -9,7 +9,7 @@ const METEOR_WALLET_MANIFEST = Object.freeze({
   platform: Object.freeze(["web"]),
   name: "Meteor Wallet",
   icon: METEOR_ICON_URL,
-  description: "Meteor Wallet for NEAR testnet",
+  description: "Meteor Wallet for the local NEAR Testnet transfer demo",
   website: "https://meteorwallet.app",
   version: "6369ad789d2f3aaf8e6ccb065021723111027174",
   executor: METEOR_EXECUTOR_URL,
@@ -25,7 +25,7 @@ const METEOR_WALLET_MANIFEST = Object.freeze({
   features: Object.freeze({
     signMessage: false,
     signTransaction: false,
-    signAndSendTransaction: false,
+    signAndSendTransaction: true,
     signAndSendTransactions: false,
     signInWithoutAddKey: true,
     signInAndSignMessage: false,
@@ -90,6 +90,7 @@ export function createGuardedMeteorConnector({ NearConnector, windowObject = glo
   }
 
   return {
+    network: "testnet",
     on(event, callback) {
       return connector.on(event, callback);
     },

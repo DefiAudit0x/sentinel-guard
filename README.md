@@ -8,7 +8,7 @@ AI agents and automated applications operating on NEAR need to execute transfers
 
 ## Links
 
-- **Live Demo**: N/A (Local CLI evaluation tool)
+- **Live Demo**: N/A (no hosted demo; local CLI and browser UI only)
 - **Contracts**: N/A (Local client-side transaction simulation & policy guard)
 
 ## How to try it
@@ -73,7 +73,7 @@ Sentinel Guard addresses key attack vectors facing automated agents and NEAR app
 1. **Malicious Recipient Drain**: Direct transfers to known drainers or unauthorized accounts are blocked by explicit `DENY` policies or flagged by high risk scores.
 2. **Contract Code Mutation**: Recent smart contract deployments/mutations raise risk scores to prevent interacting with unvetted contracts.
 3. **Large Outflow Risk**: Single transactions exceeding pre-configured thresholds (e.g. 10 NEAR) trigger warnings or strict review requirements.
-4. **Untrusted LLM Execution**: A caller can use deterministic local checks to avoid invoking its own signing step for denied requests, but this prototype does not control a wallet, signer, or third-party executor.
+4. **Untrusted LLM Execution**: The optional local UI can request one fixed Testnet self-transfer only after a local `ALLOW`, an exact review, and a second click. This is a client-side demonstration, not enforcement for other applications, and it cannot guarantee the behavior of the third-party wallet executor.
 
 ## Limitations
 
@@ -209,7 +209,7 @@ The JSON adapter requires an explicit local policy file selected by `SENTINEL_GU
 
 ### Local NEAR testnet wallet UI
 
-The local browser app uses the maintained [`@hot-labs/near-connect`](https://docs.near.org/web3-apps/tutorials/wallet-login) package and the existing read-only testnet preflight. After installing dependencies with `npm ci`, run from the repository root:
+The local browser app uses the maintained [`@hot-labs/near-connect`](https://docs.near.org/web3-apps/tutorials/wallet-login) package for an optional fixed Testnet transfer demonstration, alongside the existing read-only preflight. After installing dependencies with `npm ci`, run from the repository root:
 
 ```bash
 SENTINEL_GUARD_POLICY_FILE="$PWD/examples/ui_demo_policy.json" npm run ui
@@ -219,7 +219,7 @@ Open `http://127.0.0.1:4173/`. The server binds only to loopback; it serves the 
 
 The Connect button is enabled only for a locally constructed Meteor-only manifest. Its executor is pinned to immutable repository commit `6369ad789d2f3aaf8e6ccb065021723111027174`; the wallet icon is an image from the same GitHub repository's `main` path and is not executable code. Because `@hot-labs/near-connect` 0.12.0 can replace a same-ID manifest wallet when it receives `near-wallet-injected`, the app installs capture-phase guards for both the injected CustomEvent and the parent-frame message before constructing the connector, then accepts only a returned wallet whose manifest is the exact pinned object. It selects `meteor-wallet` directly, without a picker, and keeps `autoConnect` disabled. A detected injection or unexpected provider fails closed. Connector loading and construction occur only after the user clicks Connect.
 
-Connecting may request account sign-in through Meteor Wallet. The application's own code contains no transaction-signing or submission call, but the pinned third-party executor receives NEAR Connect storage permission and access to the `meteorCom` and `meteorComV2` bridges, and may open only `https://wallet.meteorwallet.app` or `https://meteorwallet.app`. The executor has not been audited here, so the application cannot guarantee what its code does when a user connects; the page discloses this before the Connect button. After local policy returns `ALLOW`, the preflight sends the selected public account ID to `https://rpc.testnet.near.org` for a read-only lookup, as disclosed before the preflight button. The local server accepts the account ID from the browser request and wraps that request-supplied value in a synthetic connector; the RPC lookup confirms data returned for that ID, not that the caller owns or controls the account. CSP allows the exact `raw.githubusercontent.com` origin for the pinned executor and icon, plus the fixed testnet RPC origin; it no longer allows default manifest endpoints or any `https:` wildcard. No public deployment is created. The UI controller and server tests use mocked wallets, policy evaluation, and RPC responses; run them with `npm run test:ui` or include them in `./scripts/verify.sh`.
+Connecting may request account sign-in through Meteor Wallet. The pinned third-party executor receives NEAR Connect storage permission and access to the `meteorCom` and `meteorComV2` bridges, and may open only `https://wallet.meteorwallet.app` or `https://meteorwallet.app`. It has not been audited here; the application cannot guarantee that the executor is limited to the intent shown in this UI. This risk is disclosed before Connect. The generic preflight remains read-only. The separate fixed-transfer path accepts only a native self-transfer from `defiaudit0x.testnet` to itself for exactly `0.001` NEAR (`1000000000000000000000` yoctoNEAR). It gets the sender directly from the connected wallet's `getAccounts({ network: "testnet" })`, then checks that account, network, receiver, action, amount, result status, request ID, and the evaluator's exact intent hash before showing a review. A two-minute immutable review binds the guard hash to the sender and Testnet signing parameters; the app rechecks the connected account and binding at the signing boundary. `ALLOW` never calls the wallet automatically: a second click is required, after which the same frozen `signAndSendTransaction` payload is passed to the wallet. The wallet must show its own confirmation. This remains a demonstration-only client-side gate, not production enforcement; the unaudited executor may not honor it, and no transaction-fee estimate is provided. The local preflight server accepts a client-supplied account ID and wraps it in a synthetic connector solely for read-only RPC; that is not proof of account ownership. The browser independently checks the live wallet account before offering this fixed path. CSP allows only the exact `raw.githubusercontent.com` origin for the pinned executor and icon, plus the fixed testnet RPC origin; it no longer allows default manifest endpoints or any `https:` wildcard. No public deployment is created. UI tests use mocked wallets, policy results, and RPC responses; run them with `npm run test:ui` or include them in `./scripts/verify.sh`.
 
 ### NEAR testnet read-only preflight
 
@@ -245,4 +245,4 @@ An `ALLOW` from this prototype is not a policy approval or authorization for a r
 
 ## Current limitations
 
-The Python simulator expects the caller to provide a decoded transaction dictionary and an in-memory policy engine; the bounded JSON adapter separately loads the explicitly selected local policy described above. The testnet preflight supports only a native transfer intent and a read-only account snapshot; the system does not parse signed transaction payloads, perform human approvals, estimate transaction fees, or establish production security. These capabilities and their threat model should be specified and reviewed before extending or submitting the project.
+The Python simulator expects the caller to provide a decoded transaction dictionary and an in-memory policy engine; the bounded JSON adapter separately loads the explicitly selected local policy described above. The preflight adapter remains read-only and does not sign or submit. Only the separate browser demonstration can request the one fixed Testnet self-transfer after its review and second click. The system does not parse or independently verify the wallet's signed transaction, estimate transaction fees, audit the third-party executor, or establish production security. The demo's client-side checks are not a guarantee that the wallet executor follows them.

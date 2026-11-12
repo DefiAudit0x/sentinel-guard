@@ -1,3 +1,11 @@
+import {
+  assertSelfTransferSigningBoundary,
+  createSelfTransferReview,
+  TESTNET_SELF_TRANSFER_ACCOUNT,
+  TESTNET_SELF_TRANSFER_AMOUNT_NEAR,
+  TESTNET_SELF_TRANSFER_AMOUNT_YOCTO,
+} from "./self_transfer.mjs";
+
 export const TESTNET_RECIPIENT = "defiaudit0x.testnet";
 export const MAX_AMOUNT_YOCTO = 100000000000000000000000n;
 const YOCTO_PER_NEAR = 1000000000000000000000000n;
@@ -54,6 +62,8 @@ export function mountUI({
   document,
   fetchImpl = globalThis.fetch,
   connectionEnabled = false,
+  clock = () => Date.now(),
+  cryptoObject = globalThis.crypto,
 }) {
   if (typeof createConnector !== "function") {
     throw new TypeError("A lazy NEAR Connect factory is required.");
@@ -72,31 +82,62 @@ export function mountUI({
   const resultCard = document.querySelector("#result-card");
   const resultStatus = document.querySelector("#result-status");
   const resultDetails = document.querySelector("#result-details");
+  const prepareSelfTransferButton = document.querySelector("#prepare-self-transfer");
+  const selfTransferStatus = document.querySelector("#self-transfer-status");
+  const transferReview = document.querySelector("#transfer-review");
+  const reviewStatus = document.querySelector("#review-status");
+  const reviewDetails = document.querySelector("#review-details");
+  const signSelfTransferButton = document.querySelector("#sign-self-transfer");
+  const cancelSelfTransferButton = document.querySelector("#cancel-self-transfer");
 
   if ([connectButton, accountSelect, walletStatus, form, amountInput, previousInput,
-    ageInput, preflightButton, resultCard, resultStatus, resultDetails].some((item) => !item)) {
+    ageInput, preflightButton, resultCard, resultStatus, resultDetails,
+    prepareSelfTransferButton, selfTransferStatus, transferReview, reviewStatus,
+    reviewDetails, signSelfTransferButton, cancelSelfTransferButton].some((item) => !item)) {
     throw new TypeError("The local UI page is missing a required control.");
   }
 
   let connector = null;
+  let wallet = null;
   let connected = false;
   let busy = false;
+  let review = null;
+  let reviewedUiSnapshot = null;
+  const attemptedRequestIds = new Set();
+  const consumedRequestIds = new Set();
   const canConnect = connectionEnabled === true;
+
+  const updateButtons = () => {
+    connectButton.disabled = !canConnect || busy || connected;
+    preflightButton.disabled = busy || !connected;
+    prepareSelfTransferButton.disabled = busy || !connected;
+    signSelfTransferButton.disabled = busy || !review || attemptedRequestIds.has(review.requestId);
+    cancelSelfTransferButton.disabled = busy || !review;
+  };
   const setBusy = (value) => {
     busy = value;
-    connectButton.disabled = !canConnect || value || connected;
-    preflightButton.disabled = value || !connected;
+    updateButtons();
+  };
+  const discardReview = (message) => {
+    if (review) consumedRequestIds.add(review.requestId);
+    review = null;
+    reviewedUiSnapshot = null;
+    transferReview.hidden = true;
+    signSelfTransferButton.disabled = true;
+    cancelSelfTransferButton.disabled = true;
+    if (message) setText(reviewStatus, message);
   };
   const resetWallet = () => {
     connected = false;
+    wallet = null;
+    discardReview("No transfer review is active.");
     clearAccounts(accountSelect);
     const option = document.createElement("option");
     option.value = "";
     option.textContent = "Connect a wallet first";
     accountSelect.appendChild(option);
     accountSelect.disabled = true;
-    connectButton.disabled = !canConnect;
-    preflightButton.disabled = true;
+    updateButtons();
     setText(walletStatus, canConnect
       ? "Not connected. Nothing connects automatically."
       : "Wallet connection is disabled until this app can enforce a reviewed Meteor-only provider.");
@@ -104,7 +145,8 @@ export function mountUI({
 
   connectButton.disabled = !canConnect;
   accountSelect.disabled = true;
-  preflightButton.disabled = true;
+  transferReview.hidden = true;
+  updateButtons();
   if (!canConnect) {
     setText(walletStatus, "Wallet connection is disabled until this app can enforce a reviewed Meteor-only provider.");
   }
@@ -117,17 +159,18 @@ export function mountUI({
       // Construction, connector module loading, and connection all follow this click.
       if (!connector) {
         const candidate = await createConnector();
-        if (!candidate || typeof candidate.connect !== "function" || typeof candidate.on !== "function") {
-          throw new TypeError("The NEAR Connect factory returned an invalid connector.");
+        if (!candidate || candidate.network !== "testnet"
+          || typeof candidate.connect !== "function" || typeof candidate.on !== "function") {
+          throw new TypeError("The NEAR Connect factory must return a Testnet connector with the required API.");
         }
         candidate.on("wallet:signOut", resetWallet);
         connector = candidate;
       }
-      const wallet = await connector.connect();
-      if (!wallet || typeof wallet.getAccounts !== "function") {
+      const connectedWallet = await connector.connect();
+      if (!connectedWallet || typeof connectedWallet.getAccounts !== "function") {
         throw new Error("The wallet did not return a readable account list.");
       }
-      const accounts = normalizeAccounts(await wallet.getAccounts());
+      const accounts = normalizeAccounts(await connectedWallet.getAccounts({ network: "testnet" }));
       if (accounts.length === 0) throw new Error("The connected wallet returned no accounts.");
       clearAccounts(accountSelect);
       for (const account of accounts) {
@@ -137,6 +180,7 @@ export function mountUI({
         accountSelect.appendChild(option);
       }
       accountSelect.disabled = false;
+      wallet = connectedWallet;
       connected = true;
       setText(walletStatus, "Connected to NEAR testnet. Choose the account to inspect.");
     } catch (error) {
@@ -150,6 +194,7 @@ export function mountUI({
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (busy || !connected) return;
+    discardReview("The prior self-transfer review was cancelled before running this read-only preflight.");
     const accountId = accountSelect.value;
     if (!accountId) {
       setText(resultStatus, "Choose a connected account first.");
@@ -193,15 +238,161 @@ export function mountUI({
         recipient: result.intent?.transaction?.recipient || TESTNET_RECIPIENT,
         amountYocto: result.intent?.transaction?.amount_yocto || amountYocto,
         submitted: result.submitted,
-        note: "The application preflight did not call transaction signing or submission.",
+        note: "This generic preflight is read-only and does not call transaction signing or submission.",
       }, null, 2));
     } catch (error) {
       setText(resultStatus, error instanceof Error ? error.message : "Local preflight failed.");
-      setText(resultDetails, "The application preflight made no transaction signing or submission call.");
+      setText(resultDetails, "The generic preflight made no transaction signing or submission call.");
     } finally {
       setBusy(false);
     }
   });
+
+  prepareSelfTransferButton.addEventListener("click", async () => {
+    if (busy || !connected) return;
+    discardReview("Preparing a fresh fixed-intent review; no wallet action has been requested.");
+    let context;
+    try {
+      context = readRiskContext(previousInput, ageInput);
+    } catch (error) {
+      setText(selfTransferStatus, error instanceof Error ? error.message : "Invalid risk context.");
+      return;
+    }
+    setBusy(true);
+    setText(selfTransferStatus, "Checking the connected Testnet account and running the fixed local preflight…");
+    try {
+      if (connector?.network !== "testnet" || !wallet || typeof wallet.getAccounts !== "function") {
+        throw new Error("A directly connected NEAR Testnet wallet is required.");
+      }
+      const liveAccounts = normalizeAccounts(await wallet.getAccounts({ network: "testnet" }));
+      const sender = liveAccounts.find((account) => account.accountId === TESTNET_SELF_TRANSFER_ACCOUNT);
+      if (!sender || accountSelect.value !== sender.accountId) {
+        throw new Error(`Select ${TESTNET_SELF_TRANSFER_ACCOUNT} from the connected Testnet wallet first.`);
+      }
+
+      // The server uses accountId only for a read-only public RPC lookup; ownership is checked above in-browser.
+      const response = await fetchImpl("/api/preflight", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          accountId: sender.accountId,
+          recipient: TESTNET_SELF_TRANSFER_ACCOUNT,
+          amountYocto: TESTNET_SELF_TRANSFER_AMOUNT_YOCTO,
+          context,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `Local preflight failed (${response.status}).`);
+      if (result?.guard?.decision !== "ALLOW") {
+        setText(selfTransferStatus, `${result?.status || "BLOCKED"} · guard ${result?.guard?.decision || "UNKNOWN"}; no wallet action was requested.`);
+        return;
+      }
+      const nextReview = await createSelfTransferReview({
+        result,
+        senderAccountId: sender.accountId,
+        context,
+        now: clock(),
+        cryptoObject,
+      });
+      if (consumedRequestIds.has(nextReview.requestId)) {
+        throw new Error("This guard request was already consumed; prepare a fresh review.");
+      }
+      review = nextReview;
+      reviewedUiSnapshot = {
+        amount: amountInput.value,
+        previousInteractions: previousInput.value,
+        accountAgeDays: ageInput.value,
+        accountId: accountSelect.value,
+      };
+      const signingParams = review.signingParams;
+      transferReview.hidden = false;
+      setText(reviewDetails, JSON.stringify({
+        network: signingParams.network,
+        sender: signingParams.signerId,
+        receiver: signingParams.receiverId,
+        action: `${signingParams.actions[0].type} (native NEAR transfer)`,
+        amountNear: TESTNET_SELF_TRANSFER_AMOUNT_NEAR,
+        amountYocto: signingParams.actions[0].params.deposit,
+        latestBalanceYocto: review.balanceYocto,
+        guardRequestId: review.requestId,
+        guardedIntentHash: review.intentHash,
+        reviewBindingHash: review.bindingHash,
+        expiresAt: new Date(review.expiresAt).toISOString(),
+        feeNote: "No transaction-fee estimate is provided. The wallet must show its own confirmation; verify the exact details there.",
+      }, null, 2));
+      setText(selfTransferStatus, "Local guard ALLOW. Review every detail below; no wallet signing or submission has been requested yet.");
+      setText(reviewStatus, "This review expires in two minutes and is bound to the exact guarded intent and connected account.");
+    } catch (error) {
+      transferReview.hidden = true;
+      review = null;
+      setText(selfTransferStatus, error instanceof Error ? error.message : "Self-transfer preflight failed closed.");
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  signSelfTransferButton.addEventListener("click", async () => {
+    if (busy || !review || attemptedRequestIds.has(review.requestId)) return;
+    const approvedReview = review;
+    setBusy(true);
+    setText(reviewStatus, "Rechecking the exact immutable review and connected Testnet account before opening the wallet…");
+    try {
+      if (!reviewedUiSnapshot
+        || reviewedUiSnapshot.amount !== amountInput.value
+        || reviewedUiSnapshot.previousInteractions !== previousInput.value
+        || reviewedUiSnapshot.accountAgeDays !== ageInput.value
+        || reviewedUiSnapshot.accountId !== accountSelect.value) {
+        throw new Error("A reviewed input changed; prepare a fresh guarded review.");
+      }
+      await assertSelfTransferSigningBoundary({
+        connector,
+        wallet,
+        selectedAccountId: accountSelect.value,
+        review: approvedReview,
+        now: clock(),
+        cryptoObject,
+      });
+      if (review !== approvedReview || consumedRequestIds.has(approvedReview.requestId)) {
+        throw new Error("The reviewed intent changed or was cancelled; prepare a fresh review.");
+      }
+      attemptedRequestIds.add(approvedReview.requestId);
+      consumedRequestIds.add(approvedReview.requestId);
+      setText(reviewStatus, "Requesting the wallet’s confirmation for the exact displayed Testnet transfer…");
+      // Pass the exact frozen payload reviewed above. Never reconstruct from mutable form fields.
+      await wallet.signAndSendTransaction(approvedReview.signingParams);
+      setText(reviewStatus, "The wallet returned a result. Verify the outcome in the wallet/Testnet before taking any further action.");
+    } catch (error) {
+      if (attemptedRequestIds.has(approvedReview.requestId)) {
+        setText(reviewStatus, `The wallet request returned an error or was rejected: ${error instanceof Error ? error.message : "unknown error"}. An error does not prove that nothing was broadcast; verify before any retry.`);
+      } else {
+        consumedRequestIds.add(approvedReview.requestId);
+        review = null;
+        reviewedUiSnapshot = null;
+        transferReview.hidden = true;
+        setText(selfTransferStatus, error instanceof Error ? error.message : "Signing-boundary validation failed closed.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  cancelSelfTransferButton.addEventListener("click", () => {
+    if (busy || !review) return;
+    discardReview("Review cancelled. No wallet signing or submission call was made.");
+    setText(selfTransferStatus, "Transfer review cancelled; prepare a fresh review if needed.");
+    updateButtons();
+  });
+
+  for (const input of [amountInput, previousInput, ageInput, accountSelect]) {
+    const invalidate = () => {
+      if (!review) return;
+      discardReview("Review cancelled because a reviewed input or selected account changed. Run a fresh preflight.");
+      setText(selfTransferStatus, "A reviewed value changed; no wallet action was requested.");
+      updateButtons();
+    };
+    input.addEventListener("input", invalidate);
+    input.addEventListener("change", invalidate);
+  }
 
   return { resetWallet };
 }

@@ -42,3 +42,11 @@ input:focus, select:focus { outline: 3px solid #136b5025; border-color: var(--gr
 pre { overflow-x: auto; padding: 14px; border-radius: 10px; background: #f3f6f3; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 footer { padding: 17px 2px 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 @media (max-width: 480px) { .shell { padding: 29px 16px 28px; } .card { padding: 18px; } .section-heading { align-items: flex-start; } }
+
+.review-panel { margin-top: 18px; padding: 16px; border: 1px solid #d5a74c; border-radius: 12px; background: #fffaf0; }
+.review-panel[hidden] { display: none; }
+.review-panel h3 { margin: 4px 0 8px; font-size: 18px; }
+.review-status { color: #493915; font-size: 13px; line-height: 1.5; }
+.button-danger { background: #9b2f2f; }
+.button-tertiary { background: #5a665f; }
+.review-panel pre { background: #fff; border: 1px solid #eadbb8; }

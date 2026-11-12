@@ -4,20 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="referrer" content="no-referrer" />
-    <title>Sentinel Guard · Testnet preflight</title>
+    <title>Sentinel Guard · NEAR Testnet transfer demo</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <main class="shell">
       <header class="hero">
         <p class="eyebrow">LOCAL PROTOTYPE · NEAR TESTNET</p>
-        <h1>Read-only transfer preflight</h1>
-        <p class="lead">Connect a wallet only when you choose. This page checks a proposed transfer and reads account data. The application's preflight code contains no transaction-signing or submission call; connecting also loads a third-party executor, described below.</p>
+        <h1>Testnet transfer preflight</h1>
+        <p class="lead">The standard preflight is read-only. A separate fixed 0.001 NEAR self-transfer demonstration can request a wallet transaction only after a local ALLOW, an exact review screen, and a second deliberate click. It is not production security enforcement.</p>
       </header>
 
-      <section class="notice" aria-label="Safety boundary">
-        <strong>The application's preflight flow does not sign or submit transactions.</strong>
-        <span>“PREPARED_NOT_SUBMITTED” is a local result, not approval or a safety guarantee. This statement does not guarantee third-party executor behavior during wallet connection.</span>
+      <section class="notice notice-risk" aria-label="Safety boundary">
+        <strong>Connecting or requesting a transaction involves an unaudited third-party executor.</strong>
+        <span>The application checks one fixed Testnet transfer and does not sign automatically. The Meteor executor has not been audited and may not obey this application's checks. A wallet confirmation is still required; verify the exact transaction there. The preflight result is not a safety guarantee.</span>
       </section>
 
       <section class="card" aria-labelledby="wallet-heading">
@@ -35,7 +35,7 @@
         </select>
         <section id="executor-risk-disclosure" class="notice notice-risk" aria-label="Third-party executor risk">
           <strong>Third-party executor risk — review before connecting.</strong>
-          <span>Connecting loads Meteor's executor, pinned to commit <code>6369ad7</code>, through NEAR Connect and requests wallet account sign-in. The manifest grants the executor NEAR Connect storage permission and access to Meteor's <code>meteorCom</code> and <code>meteorComV2</code> bridges; it may open only <code>https://wallet.meteorwallet.app</code> or <code>https://meteorwallet.app</code>. This application's code contains no transaction-signing or submission call, but the third-party executor has not been audited here. We cannot guarantee what its code does when you connect. Connect only if you trust this executor and its permissions.</span>
+          <span>Connecting loads Meteor's executor, pinned to commit <code>6369ad7</code>, through NEAR Connect and requests wallet account sign-in. The manifest grants the executor NEAR Connect storage permission and access to Meteor's <code>meteorCom</code> and <code>meteorComV2</code> bridges; it may open only <code>https://wallet.meteorwallet.app</code> or <code>https://meteorwallet.app</code>. This demo also declares NEAR Connect's single-transaction sign-and-send feature for a fixed Testnet transfer. The executor is unaudited; this application cannot guarantee that its code is limited to the displayed intent. Connect only if you trust this executor and its permissions.</span>
         </section>
         <button id="connect-wallet" class="button button-primary" type="button" disabled aria-describedby="executor-risk-disclosure">Connect Meteor wallet</button>
       </section>
@@ -43,8 +43,8 @@
       <section class="card" aria-labelledby="transfer-heading">
         <div class="section-heading">
           <div>
-            <p class="step">02 · CHECK</p>
-            <h2 id="transfer-heading">Review transfer intent</h2>
+            <p class="step">02 · READ-ONLY CHECK</p>
+            <h2 id="transfer-heading">Check a transfer intent</h2>
           </div>
         </div>
         <form id="preflight-form">
@@ -54,30 +54,54 @@
 
           <label for="amount">Amount (NEAR)</label>
           <input id="amount" name="amount" inputmode="decimal" autocomplete="off" placeholder="e.g. 0.05" required />
-          <p class="hint">Enter a positive amount up to 0.1 NEAR. Decimal precision is exact; no floating-point conversion is used.</p>
+          <p class="hint">Enter a positive amount up to 0.1 NEAR. Decimal precision is exact; no floating-point conversion is used. This button only runs the read-only preflight.</p>
 
           <details class="context-details">
             <summary>Optional risk context</summary>
-            <p class="hint">Only enter values you actually know. These are caller-supplied and are not independently verified. Leaving them blank may produce NEEDS_REVIEW.</p>
+            <p class="hint">Only enter values you actually know. These caller-supplied values are not independently verified. Leaving them blank may produce NEEDS_REVIEW; they are never invented by the app.</p>
             <label for="previous-interactions">Previous interactions with this recipient</label>
             <input id="previous-interactions" type="number" min="0" step="1" inputmode="numeric" />
             <label for="account-age-days">Account age (days)</label>
             <input id="account-age-days" type="number" min="0" step="1" inputmode="numeric" />
           </details>
 
-          <p id="rpc-disclosure" class="hint" role="note">If the local guard returns ALLOW, the preflight sends the selected public account ID to <code>https://rpc.testnet.near.org</code> for a read-only account lookup; WARN or BLOCK stops before that RPC read. The application's preflight code has no transaction-signing or submission call.</p>
+          <p id="rpc-disclosure" class="hint" role="note">If the local guard returns ALLOW, the read-only preflight sends the selected public account ID to <code>https://rpc.testnet.near.org</code> for a read-only account lookup; WARN or BLOCK stops before that RPC read. The local server's request-supplied account ID is not proof of wallet ownership.</p>
           <button id="run-preflight" class="button button-secondary" type="submit" disabled>Run read-only preflight</button>
         </form>
       </section>
 
+      <section class="card" aria-labelledby="self-transfer-heading">
+        <div class="section-heading">
+          <div>
+            <p class="step">03 · OPTIONAL TESTNET DEMO</p>
+            <h2 id="self-transfer-heading">Prepare a fixed self-transfer</h2>
+          </div>
+          <span class="network-pill">0.001 NEAR</span>
+        </div>
+        <p class="muted">Fixed intent: sender and receiver are both <code>defiaudit0x.testnet</code>; action is one native NEAR <code>Transfer</code>; amount is <code>1000000000000000000000</code> yoctoNEAR. The sender is taken from the connected wallet's live Testnet account list, not from the local server request.</p>
+        <p class="hint">This runs a fresh local guard and read-only account lookup. An ALLOW only opens the review below; it does not call the wallet. The latest balance must cover the transfer amount, but fees are not estimated and the wallet may still reject it.</p>
+        <button id="prepare-self-transfer" class="button button-secondary" type="button" disabled>Check fixed intent and show review</button>
+        <p id="self-transfer-status" class="muted" role="status">Connect the exact Testnet sender first. No transfer is prepared automatically.</p>
+
+        <section id="transfer-review" class="review-panel" aria-labelledby="review-heading" hidden>
+          <p class="step">FINAL REVIEW · NO AUTO-SIGN</p>
+          <h3 id="review-heading">Review the exact wallet request</h3>
+          <p class="hint">The review is bound to the guard request and expires after two minutes. Check the network, sender, receiver, action and exact amount here and again in the wallet.</p>
+          <pre id="review-details" aria-live="polite"></pre>
+          <p id="review-status" role="status" class="review-status"></p>
+          <button id="sign-self-transfer" class="button button-danger" type="button" disabled>Sign &amp; send this exact 0.001 NEAR transfer</button>
+          <button id="cancel-self-transfer" class="button button-tertiary" type="button" disabled>Cancel review</button>
+        </section>
+      </section>
+
       <section id="result-card" class="card result-card" aria-labelledby="result-heading" hidden>
-        <p class="step">RESULT</p>
+        <p class="step">READ-ONLY RESULT</p>
         <h2 id="result-heading">Preflight result</h2>
         <p id="result-status" role="status"></p>
         <pre id="result-details" aria-live="polite"></pre>
       </section>
 
-      <footer>Experimental local prototype. Testnet preflight only; its application code has no transaction-signing or submission call. See the third-party executor risk notice before connecting.</footer>
+      <footer>Demonstration-only local prototype. The fixed wallet path can request one native Testnet transfer after a separate user click, but the unaudited third-party executor may not enforce this UI's limits. No production enforcement, transaction-fee estimate, or safety guarantee is provided.</footer>
     </main>
     <script type="module" src="./main.mjs"></script>
   </body>
