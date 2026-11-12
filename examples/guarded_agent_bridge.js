@@ -20,6 +20,7 @@ const MAX_INPUT_BYTES = 64 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const ADAPTER_TIMEOUT_MS = 2500;
 const REQUEST_ID_MAX_LENGTH = 128;
+const MAX_JSON_DEPTH = 256;
 
 function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -53,6 +54,140 @@ function freezeRecursively(value) {
     for (const child of Object.values(value)) freezeRecursively(child);
   }
   return value;
+}
+
+function addJsonBytes(state, count) {
+  if (count > MAX_INPUT_BYTES - state.bytes) {
+    throw new Error("request exceeds the 65536-byte input limit");
+  }
+  state.bytes += count;
+}
+
+function addJsonStringBytes(value, state) {
+  addJsonBytes(state, 2);
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c) {
+      addJsonBytes(state, 2);
+    } else if (code <= 0x1f) {
+      addJsonBytes(state, code === 0x08 || code === 0x09 || code === 0x0a
+        || code === 0x0c || code === 0x0d ? 2 : 6);
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        addJsonBytes(state, 4);
+        index += 1;
+      } else {
+        addJsonBytes(state, 6);
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      addJsonBytes(state, 6);
+    } else {
+      addJsonBytes(state, code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3);
+    }
+  }
+}
+
+function rejectToJSONBehavior(value) {
+  for (let prototype = value; prototype !== null; prototype = Object.getPrototypeOf(prototype)) {
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, "toJSON");
+    if (descriptor && (!Object.hasOwn(descriptor, "value") || typeof descriptor.value === "function")) {
+      throw new TypeError("request must contain only plain JSON values");
+    }
+  }
+}
+
+function *ownEnumerableKeys(value) {
+  for (const key in value) {
+    if (Object.hasOwn(value, key)) yield key;
+  }
+}
+
+function preflightJsonInput(root) {
+  const state = { bytes: 0 };
+  const activeObjects = new WeakSet();
+  const stack = [{ kind: "value", value: root, depth: 0 }];
+  while (stack.length > 0) {
+    const item = stack[stack.length - 1];
+    if (item.kind === "object") {
+      const next = item.keys.next();
+      if (next.done) {
+        addJsonBytes(state, 1);
+        activeObjects.delete(item.value);
+        stack.pop();
+        continue;
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(item.value, next.value);
+      if (!descriptor || !descriptor.enumerable) continue;
+      if (!Object.hasOwn(descriptor, "value")) {
+        throw new TypeError("request must not contain accessor properties");
+      }
+      if (item.count > 0) addJsonBytes(state, 1);
+      addJsonStringBytes(next.value, state);
+      addJsonBytes(state, 1);
+      item.count += 1;
+      stack.push({ kind: "value", value: descriptor.value, depth: item.depth + 1 });
+      continue;
+    }
+    if (item.kind === "array") {
+      if (item.index >= item.length) {
+        addJsonBytes(state, 1);
+        activeObjects.delete(item.value);
+        stack.pop();
+        continue;
+      }
+      if (item.index > 0) addJsonBytes(state, 1);
+      const descriptor = Object.getOwnPropertyDescriptor(item.value, String(item.index));
+      item.index += 1;
+      if (descriptor && !Object.hasOwn(descriptor, "value")) {
+        throw new TypeError("request must not contain accessor properties");
+      }
+      stack.push({
+        kind: "value",
+        value: descriptor ? descriptor.value : null,
+        depth: item.depth + 1,
+      });
+      continue;
+    }
+
+    stack.pop();
+    const value = item.value;
+    if (value === null) {
+      addJsonBytes(state, 4);
+    } else if (typeof value === "string") {
+      addJsonStringBytes(value, state);
+    } else if (typeof value === "boolean") {
+      addJsonBytes(state, value ? 4 : 5);
+    } else if (typeof value === "number" && Number.isFinite(value)) {
+      addJsonBytes(state, String(value).length);
+    } else if (typeof value === "object") {
+      if (item.depth >= MAX_JSON_DEPTH) {
+        throw new Error(`request nesting exceeds the ${MAX_JSON_DEPTH}-level bridge limit`);
+      }
+      if (activeObjects.has(value)) throw new TypeError("request must not contain circular references");
+      const isArray = Array.isArray(value);
+      if (isArray ? Object.getPrototypeOf(value) !== Array.prototype : !isPlainObject(value)) {
+        throw new TypeError("request must contain only plain JSON values");
+      }
+      rejectToJSONBehavior(value);
+      activeObjects.add(value);
+      if (isArray) {
+        const length = value.length;
+        const minimumBytes = length === 0 ? 2 : 2 * length + 1;
+        if (minimumBytes > MAX_INPUT_BYTES - state.bytes) {
+          throw new Error("request exceeds the 65536-byte input limit");
+        }
+        addJsonBytes(state, 1);
+        stack.push({ kind: "array", value, depth: item.depth, index: 0, length });
+      } else {
+        addJsonBytes(state, 1);
+        stack.push({ kind: "object", value, depth: item.depth, count: 0, keys: ownEnumerableKeys(value) });
+      }
+    } else {
+      throw new TypeError("request must contain only plain JSON values");
+    }
+  }
+  return state.bytes;
 }
 
 function exactKeys(value, expected) {
@@ -184,6 +319,7 @@ function runPythonAdapter(
 function evaluateRequest(request, adapterRunner) {
   if (typeof adapterRunner !== "function") throw new TypeError("adapterRunner must be a function");
   try {
+    preflightJsonInput(request);
     const serializedRequest = JSON.stringify(request);
     if (typeof serializedRequest !== "string") throw new TypeError("request is not JSON-serializable");
     if (Buffer.byteLength(serializedRequest, "utf8") > MAX_INPUT_BYTES) {

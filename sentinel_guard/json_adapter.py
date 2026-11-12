@@ -314,6 +314,15 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant {value} is not accepted")
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r} is not accepted")
+        result[key] = value
+    return result
+
+
 def main() -> int:
     """Read one bounded JSON request from stdin and write one JSON response."""
     raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
@@ -324,7 +333,11 @@ def main() -> int:
         )
     else:
         try:
-            request = json.loads(raw, parse_constant=_reject_json_constant)
+            request = json.loads(
+                raw,
+                parse_constant=_reject_json_constant,
+                object_pairs_hook=_reject_duplicate_json_keys,
+            )
             response = evaluate_request(request, os.environ.get(POLICY_ENV_VAR))
         except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as error:
             response = _empty_response(

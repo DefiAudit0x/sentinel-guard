@@ -290,6 +290,94 @@ test("fixed subprocess invocation uses bounded input, output, and timeout withou
   assert.ok(Buffer.byteLength(serialized, "utf8") < MAX_INPUT_BYTES);
 });
 
+test("oversized request is rejected before adapter runner and mock signer", () => {
+  const request = makeRequest();
+  request.intent.padding = "💩".repeat(Math.ceil(MAX_INPUT_BYTES / 4));
+  let adapterCalls = 0;
+  let signerCalls = 0;
+  let stringifyCalls = 0;
+  const originalStringify = JSON.stringify;
+  let result;
+  JSON.stringify = () => {
+    stringifyCalls += 1;
+    throw new Error("oversized request must not be serialized");
+  };
+  try {
+    result = evaluateAndMockSign(request, () => {
+      signerCalls += 1;
+      return "MUST-NOT-RUN";
+    }, {
+      adapterRunner: () => {
+        adapterCalls += 1;
+        return responseFor(request);
+      },
+    });
+  } finally {
+    JSON.stringify = originalStringify;
+  }
+
+  assert.equal(result.response, null);
+  assert.match(result.error, /65536-byte input limit/);
+  assert.equal(stringifyCalls, 0);
+  assert.equal(adapterCalls, 0);
+  assert.equal(signerCalls, 0);
+});
+
+test("size precheck handles deep input iteratively and rejects before serialization", () => {
+  const request = makeRequest();
+  let nested = {};
+  for (let index = 0; index < 20_000; index += 1) nested = { child: nested };
+  request.intent.deep = nested;
+  let stringifyCalls = 0;
+  let adapterCalls = 0;
+  const originalStringify = JSON.stringify;
+  let result;
+  JSON.stringify = () => {
+    stringifyCalls += 1;
+    throw new Error("deep request must not be serialized");
+  };
+  try {
+    result = evaluateAndMockSign(request, () => "MUST-NOT-RUN", {
+      adapterRunner: () => {
+        adapterCalls += 1;
+        return responseFor(request);
+      },
+    });
+  } finally {
+    JSON.stringify = originalStringify;
+  }
+  assert.equal(result.response, null);
+  assert.match(result.error, /nesting exceeds the 256-level bridge limit/);
+  assert.equal(stringifyCalls, 0);
+  assert.equal(adapterCalls, 0);
+});
+
+test("request exactly at the input-byte limit remains accepted", () => {
+  const request = makeRequest();
+  request.intent.padding = "";
+  const emptyPaddingBytes = Buffer.byteLength(JSON.stringify(request), "utf8");
+  const pattern = "💩\n\\\"\u0000\ud800";
+  const patternBytes = Buffer.byteLength(JSON.stringify(pattern), "utf8") - 2;
+  const remainingBytes = MAX_INPUT_BYTES - emptyPaddingBytes;
+  request.intent.padding = pattern.repeat(Math.floor(remainingBytes / patternBytes))
+    + "x".repeat(remainingBytes % patternBytes);
+  const serializedBytes = Buffer.byteLength(JSON.stringify(request), "utf8");
+  assert.equal(serializedBytes, MAX_INPUT_BYTES);
+  let adapterCalls = 0;
+  let receivedBytes = null;
+  const result = evaluateAndMockSign(request, () => "MOCK-ONLY", {
+    adapterRunner: (serialized) => {
+      adapterCalls += 1;
+      receivedBytes = Buffer.byteLength(serialized, "utf8");
+      return responseFor(request);
+    },
+  });
+  assert.equal(result.error, null);
+  assert.equal(result.response.decision, "ALLOW");
+  assert.equal(adapterCalls, 1);
+  assert.equal(receivedBytes, MAX_INPUT_BYTES);
+});
+
 test("default bridge round-trips through the real local Python adapter", () => {
   const request = makeRequest("actual-adapter-test");
   let signerCalls = 0;

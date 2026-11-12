@@ -317,6 +317,26 @@ class JsonAdapterTests(unittest.TestCase):
         self.assertEqual(response["decision"], "BLOCK")
         self.assertEqual(response["policy"]["status"], "NOT_EVALUATED")
 
+    def test_cli_rejects_duplicate_keys_in_raw_json_request(self):
+        request = make_request()
+        raw_request = '{"request_id":"first",' + json.dumps(request)[1:]
+        completed = subprocess.run(
+            [str(PYTHON), "-I", "-S", str(PROJECT_ROOT / "sentinel_guard" / "json_adapter.py")],
+            input=raw_request,
+            capture_output=True,
+            text=True,
+            env={**os.environ, POLICY_ENV_VAR: str(DEMO_POLICY_PATH)},
+            cwd=PROJECT_ROOT,
+            check=False,
+            timeout=5,
+        )
+
+        self.assertEqual(completed.returncode, 0, msg=completed.stderr)
+        response = json.loads(completed.stdout)
+        self.assertEqual(response["status"], "ERROR")
+        self.assertEqual(response["decision"], "BLOCK")
+        self.assertEqual(response["policy"]["status"], "NOT_EVALUATED")
+
 
 if __name__ == "__main__":
     unittest.main()
