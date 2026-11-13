@@ -26,8 +26,9 @@ AI agents and automated applications operating on NEAR need to execute transfers
 
 ## Screenshots and video
 
-- Screenshots: N/A
-- Demo Video: N/A
+- Screenshot: ![Sentinel Guard Testnet preflight warning with entered, unverified context](docs/sentinel-guard-testnet-warn.png)
+  The displayed risk inputs are manually entered and are not independently verified by the UI.
+- Demo Video: [Watch the demo on X](https://x.com/DeFiAudit/status/2121264464871805227). It shows the Meteor Testnet preflight and a separate simulated red-team segment.
 
 ## Architecture
 
