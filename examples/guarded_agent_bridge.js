@@ -272,11 +272,35 @@ function validateResponse(response, requestId, intentHash) {
     || (policy.status === "NOT_EVALUATED" && risk.status === "NOT_EVALUATED");
 }
 
+function validatePolicyResponse(response, requestId, intentHash) {
+  if (!exactKeys(response, ["request_id", "intent_hash", "status", "allowed", "reason", "matched_rule", "error"])) {
+    return false;
+  }
+  if (response.request_id !== requestId || response.intent_hash !== intentHash
+    || !/^[0-9a-f]{64}$/.test(response.intent_hash)) return false;
+  if (!["POLICY_EVALUATED", "INVALID_INPUT", "ERROR"].includes(response.status)) return false;
+  if (response.status === "POLICY_EVALUATED") {
+    return typeof response.allowed === "boolean"
+      && typeof response.reason === "string" && !!response.reason.trim()
+      && isStringOrNull(response.matched_rule)
+      && response.error === null
+      && (response.allowed
+        ? response.matched_rule === "json-policy-recipient-allow-list"
+        : response.matched_rule === null);
+  }
+  return response.allowed === null
+    && response.reason === null
+    && response.matched_rule === null
+    && typeof response.error === "string" && !!response.error.trim();
+}
+
 function runPythonAdapter(
   serializedRequest,
   spawn = spawnSync,
   policyPath = process.env[POLICY_ENV_VAR],
+  mode = "risk",
 ) {
+  if (mode !== "risk" && mode !== "policy-only") throw new TypeError("adapter mode must be risk or policy-only");
   if (!fs.existsSync(PYTHON)) throw new Error("project .venv/bin/python was not found");
   const childEnv = {
     PATH: process.env.PATH || "",
@@ -290,7 +314,9 @@ function runPythonAdapter(
     }
     childEnv[POLICY_ENV_VAR] = policyPath;
   }
-  const child = spawn(PYTHON, ["-I", "-S", "-B", ADAPTER], {
+  const args = ["-I", "-S", "-B", ADAPTER];
+  if (mode === "policy-only") args.push("--policy-only");
+  const child = spawn(PYTHON, args, {
     cwd: PROJECT_ROOT,
     env: childEnv,
     input: serializedRequest,
@@ -314,6 +340,10 @@ function runPythonAdapter(
     throw new Error("Python adapter returned malformed JSON");
   }
   return response;
+}
+
+function runPythonPolicyAdapter(serializedRequest, spawn = spawnSync, policyPath = process.env[POLICY_ENV_VAR]) {
+  return runPythonAdapter(serializedRequest, spawn, policyPath, "policy-only");
 }
 
 function evaluateRequest(request, adapterRunner) {
@@ -346,6 +376,38 @@ function evaluateRequest(request, adapterRunner) {
 
 function evaluateIntent(request, { adapterRunner = runPythonAdapter } = {}) {
   const { response, error } = evaluateRequest(request, adapterRunner);
+  return { response, error };
+}
+
+function evaluatePolicyRequest(request, adapterRunner) {
+  if (typeof adapterRunner !== "function") throw new TypeError("adapterRunner must be a function");
+  try {
+    preflightJsonInput(request);
+    const serializedRequest = JSON.stringify(request);
+    if (typeof serializedRequest !== "string") throw new TypeError("request is not JSON-serializable");
+    if (Buffer.byteLength(serializedRequest, "utf8") > MAX_INPUT_BYTES) {
+      throw new Error("request exceeds the 65536-byte input limit");
+    }
+    const safeRequest = JSON.parse(serializedRequest);
+    if (!isPlainObject(safeRequest) || typeof safeRequest.request_id !== "string"
+      || !safeRequest.request_id.trim() || safeRequest.request_id.length > REQUEST_ID_MAX_LENGTH
+      || !isPlainObject(safeRequest.intent)) {
+      throw new Error("request must include a valid request_id and intent object");
+    }
+    const intentHash = createHash("sha256").update(canonicalJson(safeRequest.intent), "utf8").digest("hex");
+    freezeRecursively(safeRequest.intent);
+    const response = adapterRunner(serializedRequest);
+    if (!validatePolicyResponse(response, safeRequest.request_id, intentHash)) {
+      throw new Error("policy-only adapter response failed schema or request-identity validation");
+    }
+    return { safeRequest, response, error: null };
+  } catch (error) {
+    return { safeRequest: null, response: null, error: error instanceof Error ? error.message : "policy bridge failure" };
+  }
+}
+
+function evaluatePolicyIntent(request, { adapterRunner = runPythonPolicyAdapter } = {}) {
+  const { response, error } = evaluatePolicyRequest(request, adapterRunner);
   return { response, error };
 }
 
@@ -428,7 +490,10 @@ module.exports = {
   MAX_OUTPUT_BYTES,
   evaluateAndMockSign,
   evaluateIntent,
+  evaluatePolicyIntent,
   makeRequest,
   runPythonAdapter,
+  runPythonPolicyAdapter,
   validateResponse,
+  validatePolicyResponse,
 };

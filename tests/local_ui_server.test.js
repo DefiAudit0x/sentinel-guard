@@ -15,10 +15,15 @@ const {
   validateLocalRequest,
 } = require("../app/local_ui_server.js");
 const {
+  CODE_HASH_BASELINES_ENV_VAR,
+  EMPTY_CODE_HASH,
   preflightTestnetNativeTransfer,
   TESTNET_RPC_URL,
 } = require("../examples/near_testnet_preflight.js");
-const { runPythonAdapter } = require("../examples/guarded_agent_bridge.js");
+const {
+  runPythonAdapter,
+  runPythonPolicyAdapter,
+} = require("../examples/guarded_agent_bridge.js");
 
 const projectPolicyDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-ui-policy-"));
 const testPolicyPath = path.join(projectPolicyDirectory, "policy.json");
@@ -53,6 +58,21 @@ function rpcFetchStub() {
     };
   };
   return { calls, fetchImpl };
+}
+
+async function withRecipientBaseline(accountId, callback) {
+  const previous = process.env[CODE_HASH_BASELINES_ENV_VAR];
+  process.env[CODE_HASH_BASELINES_ENV_VAR] = JSON.stringify([{
+    network: "testnet",
+    account_id: accountId,
+    code_hash: EMPTY_CODE_HASH,
+  }]);
+  try {
+    return await callback();
+  } finally {
+    if (previous === undefined) delete process.env[CODE_HASH_BASELINES_ENV_VAR];
+    else process.env[CODE_HASH_BASELINES_ENV_VAR] = previous;
+  }
 }
 
 async function withServer(options, callback) {
@@ -111,7 +131,8 @@ test("server preflight uses only a synthetic read-only account connector and moc
     return preflightTestnetNativeTransfer(options);
   };
   const adapterRunner = (serialized) => runPythonAdapter(serialized, undefined, testPolicyPath);
-  await withServer({ preflight, adapterRunner, fetchImpl }, async (base) => {
+  const policyAdapterRunner = (serialized) => runPythonPolicyAdapter(serialized, undefined, testPolicyPath);
+  await withRecipientBaseline(FIXED_RECIPIENT, () => withServer({ preflight, adapterRunner, policyAdapterRunner, fetchImpl }, async (base) => {
     const response = await postIntent(base, validRequest(), { origin: base });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "no-store");
@@ -120,8 +141,9 @@ test("server preflight uses only a synthetic read-only account connector and moc
     assert.equal(result.status, "PREPARED_NOT_SUBMITTED");
     assert.equal(result.guard.decision, "ALLOW");
     assert.equal(result.account.accountId, "defiaudit0x.testnet");
+    assert.equal(result.recipientCodeCheck.status, "MATCHED");
     assert.equal(result.submitted, false);
-    assert.deepEqual(rpcCalls.map(({ method }) => method), ["status", "query"]);
+    assert.deepEqual(rpcCalls.map(({ method }) => method), ["status", "query", "status", "query"]);
     assert.deepEqual(Object.keys(capturedConnector).sort(), ["network", "wallet"]);
     assert.equal(capturedConnector.network, "testnet");
     const wallet = await capturedConnector.wallet();
@@ -130,22 +152,41 @@ test("server preflight uses only a synthetic read-only account connector and moc
     assert.equal(typeof wallet.signAndSendTransaction, "undefined");
     assert.equal(typeof wallet.signAndSendTransactions, "undefined");
     assert.equal(typeof wallet.signTransaction, "undefined");
-  });
+  }));
 });
 
-test("blank context remains a warning and stops before RPC rather than fabricating account history", async () => {
+test("blank context remains a final warning after policy-only gate and read-only account checks", async () => {
   const { calls: rpcCalls, fetchImpl } = rpcFetchStub();
   const adapterRunner = (serialized) => runPythonAdapter(serialized, undefined, testPolicyPath);
-  await withServer({ adapterRunner, fetchImpl }, async (base) => {
+  const policyAdapterRunner = (serialized) => runPythonPolicyAdapter(serialized, undefined, testPolicyPath);
+  const riskRequests = [];
+  const policyRequests = [];
+  const captureRisk = (serialized) => {
+    riskRequests.push(JSON.parse(serialized));
+    return adapterRunner(serialized);
+  };
+  const capturePolicy = (serialized) => {
+    policyRequests.push(JSON.parse(serialized));
+    return policyAdapterRunner(serialized);
+  };
+  await withRecipientBaseline(FIXED_RECIPIENT, () => withServer({
+    adapterRunner: captureRisk,
+    policyAdapterRunner: capturePolicy,
+    fetchImpl,
+  }, async (base) => {
     const response = await postIntent(base, validRequest({ context: {} }));
     assert.equal(response.status, 200);
     const result = await response.json();
     assert.equal(result.status, "NEEDS_REVIEW");
     assert.equal(result.guard.decision, "WARN");
-    assert.equal(result.account, null);
+    assert.equal(result.account.accountId, FIXED_RECIPIENT);
+    assert.equal(Object.hasOwn(policyRequests[0].intent.transaction, "account_age_days"), false);
+    assert.equal(Object.hasOwn(policyRequests[0].intent.transaction, "previous_interactions"), false);
+    assert.equal(Object.hasOwn(riskRequests[0].intent.transaction, "account_age_days"), false);
+    assert.equal(Object.hasOwn(riskRequests[0].intent.transaction, "previous_interactions"), false);
     assert.equal(result.submitted, false);
-    assert.equal(rpcCalls.length, 0);
-  });
+    assert.deepEqual(rpcCalls.map(({ method }) => method), ["status", "query", "status", "query"]);
+  }));
 });
 
 test("rejects cross-origin requests and never serves files outside the UI asset allow-list", async () => {

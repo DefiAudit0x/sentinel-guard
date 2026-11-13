@@ -9,13 +9,19 @@ const {
   MAX_INPUT_BYTES,
   MAX_OUTPUT_BYTES,
   evaluateAndMockSign,
+  evaluatePolicyIntent,
   runPythonAdapter,
+  runPythonPolicyAdapter,
 } = require("../examples/guarded_agent_bridge.js");
 
 const EXAMPLE_POLICY = path.resolve(__dirname, "../examples/test_policy.json");
 
 function runWithExamplePolicy(serialized) {
   return runPythonAdapter(serialized, undefined, EXAMPLE_POLICY);
+}
+
+function runWithExamplePolicyOnly(serialized) {
+  return runPythonPolicyAdapter(serialized, undefined, EXAMPLE_POLICY);
 }
 
 function makeRequest(requestId = "node-test-1") {
@@ -70,6 +76,75 @@ function responseFor(request, overrides = {}) {
     ...overrides,
   };
 }
+
+function policyResponseFor(request, overrides = {}) {
+  return {
+    request_id: request.request_id,
+    intent_hash: intentHash(request),
+    status: "POLICY_EVALUATED",
+    allowed: true,
+    reason: "matched_allow_rule",
+    matched_rule: "json-policy-recipient-allow-list",
+    error: null,
+    ...overrides,
+  };
+}
+
+test("policy-only bridge returns a request-bound policy decision without risk fields", () => {
+  const request = makeRequest("policy-only-real-adapter");
+  const result = evaluatePolicyIntent(request, { adapterRunner: runWithExamplePolicyOnly });
+
+  assert.equal(result.error, null);
+  assert.equal(result.response.status, "POLICY_EVALUATED");
+  assert.equal(result.response.request_id, request.request_id);
+  assert.equal(result.response.intent_hash, intentHash(request));
+  assert.equal(result.response.allowed, true);
+  assert.equal(Object.hasOwn(result.response, "risk"), false);
+});
+
+test("policy-only bridge stops on a real policy denial", () => {
+  const request = makeRequest("policy-only-deny");
+  request.intent.resource = "mallory.near";
+  request.intent.transaction.recipient = "mallory.near";
+  const result = evaluatePolicyIntent(request, { adapterRunner: runWithExamplePolicyOnly });
+
+  assert.equal(result.error, null);
+  assert.equal(result.response.status, "POLICY_EVALUATED");
+  assert.equal(result.response.allowed, false);
+  assert.equal(result.response.reason, "recipient_not_allowed");
+});
+
+test("policy-only bridge rejects malformed or mismatched response identity", () => {
+  const request = makeRequest("policy-only-response-binding");
+  const mismatched = policyResponseFor(request, { request_id: "other-request" });
+  const extraField = policyResponseFor(request, { decision: "ALLOW" });
+  for (const response of [mismatched, extraField]) {
+    const result = evaluatePolicyIntent(request, { adapterRunner: () => response });
+    assert.equal(result.response, null);
+    assert.match(result.error, /schema or request-identity/);
+  }
+});
+
+test("policy-only subprocess uses the isolated fixed adapter invocation", () => {
+  const request = makeRequest("policy-only-subprocess");
+  const serialized = JSON.stringify(request);
+  let observed;
+  const valid = policyResponseFor(request);
+  const response = runPythonPolicyAdapter(serialized, (...args) => {
+    observed = args;
+    return { status: 0, stdout: JSON.stringify(valid), stderr: "", error: null };
+  }, EXAMPLE_POLICY);
+
+  assert.equal(response.request_id, request.request_id);
+  assert.deepEqual(observed[1].slice(0, 3), ["-I", "-S", "-B"]);
+  assert.match(observed[1][3], /sentinel_guard\/json_adapter\.py$/);
+  assert.deepEqual(observed[1][4], "--policy-only");
+  assert.equal(observed[2].shell, false);
+  assert.equal(observed[2].input, serialized);
+  assert.equal(observed[2].timeout, ADAPTER_TIMEOUT_MS);
+  assert.equal(observed[2].maxBuffer, MAX_OUTPUT_BYTES);
+  assert.equal(observed[2].env.SENTINEL_GUARD_POLICY_FILE, EXAMPLE_POLICY);
+});
 
 function invokeWith(responseOrThrow, request = makeRequest()) {
   let signerCalls = 0;

@@ -65,7 +65,7 @@
             <input id="account-age-days" type="number" min="0" step="1" inputmode="numeric" />
           </details>
 
-          <p id="rpc-disclosure" class="hint" role="note">If the local guard returns ALLOW, the read-only preflight sends the selected public account ID to <code>https://rpc.testnet.near.org</code> for a read-only account lookup; WARN or BLOCK stops before that RPC read. The local server's request-supplied account ID is not proof of wallet ownership.</p>
+          <p id="rpc-disclosure" class="hint" role="note">The policy-only check runs before any RPC. If policy allows the request and the other preflight checks pass, the read-only preflight sends the selected sender and recipient public account IDs to <code>https://rpc.testnet.near.org</code> for read-only account lookups. Final risk evaluation runs after those account reads and may return WARN or BLOCK. The local server's request-supplied sender account ID is not proof of wallet ownership.</p>
           <button id="run-preflight" class="button button-secondary" type="submit" disabled>Run read-only preflight</button>
         </form>
       </section>

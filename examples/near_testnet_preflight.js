@@ -5,11 +5,15 @@
  * app; this module never connects, signs, or submits a transaction.
  */
 const { randomUUID } = require("node:crypto");
-const { evaluateIntent } = require("./guarded_agent_bridge.js");
+const { evaluateIntent, evaluatePolicyIntent } = require("./guarded_agent_bridge.js");
 
 const TESTNET_RPC_URL = "https://rpc.testnet.near.org";
 const RPC_TIMEOUT_MS = 5000;
 const MAX_AMOUNT_DIGITS = 80;
+const CODE_HASH_BASELINES_ENV_VAR = "SENTINEL_GUARD_CODE_HASH_BASELINES";
+const EMPTY_CODE_HASH = "1".repeat(32);
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const RESERVED_CONTEXT_FIELDS = ["recipient_is_contract", "recipient_code_changed"];
 const DECIMAL_PATTERN = new RegExp(`^(?:0|[1-9][0-9]{0,${MAX_AMOUNT_DIGITS - 1}})$`);
 const ACCOUNT_ID_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?![\s\S])/;
 
@@ -24,6 +28,20 @@ function assertAccountId(accountId, label) {
     || !ACCOUNT_ID_PATTERN.test(accountId)) {
     throw new TypeError(`${label} must be a valid lowercase NEAR account ID`);
   }
+}
+
+function isValidCodeHash(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 44) return false;
+  let decoded = 0n;
+  for (const character of value) {
+    const digit = BASE58_ALPHABET.indexOf(character);
+    if (digit < 0) return false;
+    decoded = decoded * 58n + BigInt(digit);
+  }
+  const leadingZeroBytes = value.match(/^1*/)[0].length;
+  const decodedHex = decoded === 0n ? "" : decoded.toString(16);
+  const decodedBytes = Math.ceil(decodedHex.length / 2);
+  return leadingZeroBytes + decodedBytes === 32;
 }
 
 function assertJsonValue(value, label) {
@@ -72,6 +90,10 @@ function makeTransferIntent({ recipient, amountYocto, context = {} }) {
   if (Object.hasOwn(contextSnapshot, "recipient") || Object.hasOwn(contextSnapshot, "amount_yocto")) {
     throw new TypeError("context must not override recipient or amount_yocto");
   }
+  const reservedField = RESERVED_CONTEXT_FIELDS.find((field) => Object.hasOwn(contextSnapshot, field));
+  if (reservedField) {
+    throw new TypeError(`context must not provide reserved field ${reservedField}`);
+  }
   return freezeRecursively({
     action: "transfer",
     resource: recipient,
@@ -81,6 +103,66 @@ function makeTransferIntent({ recipient, amountYocto, context = {} }) {
       ...contextSnapshot,
     },
   });
+}
+
+function withDerivedRecipientSignals(intent, recipientAccount, baselineHash) {
+  const recipientIsContract = recipientAccount.codeHash !== EMPTY_CODE_HASH;
+  const recipientCodeChanged = recipientAccount.codeHash !== baselineHash;
+  return freezeRecursively({
+    ...intent,
+    transaction: {
+      ...intent.transaction,
+      recipient_is_contract: recipientIsContract,
+      recipient_code_changed: recipientCodeChanged,
+    },
+  });
+}
+
+function configuredBaselineFor(recipient) {
+  if (typeof process === "undefined" || process.release?.name !== "node") return null;
+  const raw = process.env[CODE_HASH_BASELINES_ENV_VAR];
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  let entries;
+  try {
+    entries = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(entries) || entries.length === 0) return null;
+
+  const seenAccounts = new Set();
+  for (const entry of entries) {
+    if (!isPlainObject(entry)
+      || Object.keys(entry).length !== 3
+      || !Object.hasOwn(entry, "network")
+      || !Object.hasOwn(entry, "account_id")
+      || !Object.hasOwn(entry, "code_hash")
+      || entry.network !== "testnet"
+      || typeof entry.account_id !== "string"
+      || entry.account_id.length < 2
+      || entry.account_id.length > 64
+      || !ACCOUNT_ID_PATTERN.test(entry.account_id)
+      || !isValidCodeHash(entry.code_hash)
+      || seenAccounts.has(entry.account_id)) {
+      return null;
+    }
+    seenAccounts.add(entry.account_id);
+  }
+  const match = entries.find((entry) => entry.account_id === recipient);
+  return match ? match.code_hash : null;
+}
+
+function makeNeedsReview({ intent, policyResult, reason, codeHashStatus = "UNKNOWN", account = null }) {
+  return {
+    mode: "TESTNET_PREFLIGHT_READ_ONLY",
+    status: "NEEDS_REVIEW",
+    intent,
+    guard: null,
+    preliminaryPolicy: policyResult,
+    account,
+    recipientCodeCheck: { status: codeHashStatus, reason },
+    submitted: false,
+  };
 }
 
 async function callTestnetRpc(method, params, fetchImpl = globalThis.fetch) {
@@ -107,8 +189,8 @@ async function callTestnetRpc(method, params, fetchImpl = globalThis.fetch) {
       || payload.id !== "sentinel-guard-testnet-preflight") {
       throw new Error("testnet RPC returned an invalid JSON-RPC envelope");
     }
-    if (payload.error) {
-      const message = typeof payload.error.message === "string" ? payload.error.message : "RPC error";
+    if (Object.hasOwn(payload, "error")) {
+      const message = typeof payload.error?.message === "string" ? payload.error.message : "RPC error";
       throw new Error(`testnet RPC ${method} failed: ${message}`);
     }
     if (!Object.hasOwn(payload, "result")) throw new Error("testnet RPC response has no result");
@@ -133,7 +215,7 @@ async function readTestnetAccount(accountId, fetchImpl = globalThis.fetch) {
     || typeof account.amount !== "string" || !DECIMAL_PATTERN.test(account.amount)
     || typeof account.locked !== "string" || !DECIMAL_PATTERN.test(account.locked)
     || !Number.isSafeInteger(account.storage_usage) || account.storage_usage < 0
-    || typeof account.code_hash !== "string") {
+    || !isValidCodeHash(account.code_hash)) {
     throw new Error("testnet RPC returned an invalid account snapshot");
   }
   return {
@@ -155,6 +237,7 @@ async function preflightTestnetNativeTransfer({
   requestId = randomUUID(),
   fetchImpl = globalThis.fetch,
   adapterRunner,
+  policyAdapterRunner,
 }) {
   const intent = makeTransferIntent({ recipient, amountYocto, context });
   if (!connector || typeof connector !== "object" || connector.network !== "testnet"
@@ -162,19 +245,46 @@ async function preflightTestnetNativeTransfer({
     throw new Error('connector must be a NEAR Connect instance configured with { network: "testnet" }');
   }
 
-  // Validate the exact action/resource/transaction before any RPC reads.
+  // Policy is checked independently before any wallet access or RPC. Risk is
+  // evaluated only after the read-only sender and recipient account checks.
   const request = { request_id: requestId, intent };
-  const guardResult = evaluateIntent(request, adapterRunner ? { adapterRunner } : {});
-  if (guardResult.error) throw new Error(`Sentinel Guard evaluation failed: ${guardResult.error}`);
-  if (guardResult.response.status !== "COMPLETED" || guardResult.response.decision !== "ALLOW") {
+  const policyOptions = policyAdapterRunner ? { adapterRunner: policyAdapterRunner } : {};
+  const policyGate = evaluatePolicyIntent(request, policyOptions);
+  if (policyGate.error) {
+    return makeNeedsReview({
+      intent,
+      policyResult: null,
+      reason: "Policy-only evaluation failed before wallet or RPC access",
+    });
+  }
+  const policyResult = policyGate.response;
+  if (policyResult.status === "POLICY_EVALUATED" && policyResult.allowed === false) {
     return {
       mode: "TESTNET_PREFLIGHT_READ_ONLY",
-      status: guardResult.response.decision === "BLOCK" ? "BLOCKED" : "NEEDS_REVIEW",
+      status: "BLOCKED",
       intent,
-      guard: guardResult.response,
+      guard: null,
+      policy: policyResult,
       account: null,
+      recipientCodeCheck: { status: "NOT_CHECKED", reason: "local policy denied the transfer" },
       submitted: false,
     };
+  }
+  if (policyResult.status !== "POLICY_EVALUATED" || policyResult.allowed !== true) {
+    return makeNeedsReview({
+      intent,
+      policyResult,
+      reason: "Policy-only evaluation did not return a valid allow decision",
+    });
+  }
+
+  const baselineHash = configuredBaselineFor(recipient);
+  if (!baselineHash) {
+    return makeNeedsReview({
+      intent,
+      policyResult,
+      reason: "No valid operator code-hash baseline is configured for this testnet recipient",
+    });
   }
 
   // wallet() and getAccounts() read the current connection; connect() is never called.
@@ -195,18 +305,64 @@ async function preflightTestnetNativeTransfer({
       : "accountId is not present in the connected wallet");
   }
 
-  const account = await readTestnetAccount(selectedAccount.accountId, fetchImpl);
+  let account;
+  let recipientAccount;
+  try {
+    account = await readTestnetAccount(selectedAccount.accountId, fetchImpl);
+    recipientAccount = await readTestnetAccount(recipient, fetchImpl);
+  } catch {
+    return makeNeedsReview({
+      intent,
+      policyResult,
+      reason: "Testnet account or RPC verification failed; code-hash status is unknown",
+    });
+  }
+
+  const finalIntent = withDerivedRecipientSignals(intent, recipientAccount, baselineHash);
+  const riskOptions = adapterRunner ? { adapterRunner } : {};
+  const finalGuard = evaluateIntent({ request_id: requestId, intent: finalIntent }, riskOptions);
+  const codeHashStatus = recipientAccount.codeHash === baselineHash ? "MATCHED" : "CHANGED";
+  const recipientCodeCheck = {
+    status: codeHashStatus,
+    network: "testnet",
+    accountId: recipient,
+    codeHash: recipientAccount.codeHash,
+  };
+  if (finalGuard.error || finalGuard.response.status !== "COMPLETED") {
+    return makeNeedsReview({
+      intent,
+      policyResult,
+      account,
+      codeHashStatus,
+      reason: "Final risk evaluation failed after the code-hash comparison",
+    });
+  }
+  if (finalGuard.response.decision !== "ALLOW") {
+    return {
+      mode: "TESTNET_PREFLIGHT_READ_ONLY",
+      status: finalGuard.response.decision === "BLOCK" ? "BLOCKED" : "NEEDS_REVIEW",
+      intent,
+      guard: finalGuard.response,
+      account,
+      recipientCodeCheck,
+      submitted: false,
+    };
+  }
+
   return {
     mode: "TESTNET_PREFLIGHT_READ_ONLY",
     status: "PREPARED_NOT_SUBMITTED",
     intent,
-    guard: guardResult.response,
+    guard: finalGuard.response,
     account,
+    recipientCodeCheck,
     submitted: false,
   };
 }
 
 module.exports = {
+  CODE_HASH_BASELINES_ENV_VAR,
+  EMPTY_CODE_HASH,
   RPC_TIMEOUT_MS,
   TESTNET_RPC_URL,
   makeTransferIntent,

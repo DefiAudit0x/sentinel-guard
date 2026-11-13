@@ -310,6 +310,125 @@ def evaluate_request(
     }
 
 
+def _policy_only_response(
+    request_id: str,
+    intent_hash: str,
+    status: str,
+    *,
+    allowed: bool | None = None,
+    reason: str | None = None,
+    matched_rule: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "request_id": request_id,
+        "intent_hash": intent_hash,
+        "status": status,
+        "allowed": allowed,
+        "reason": reason,
+        "matched_rule": matched_rule,
+        "error": error,
+    }
+
+
+def evaluate_policy_request(
+    request: object, policy_path: str | Path | None = None
+) -> dict[str, Any]:
+    """Evaluate only the configured transfer policy, without running risk."""
+    request_id, intent_hash = _request_identity(request)
+
+    def invalid(reason: str) -> dict[str, Any]:
+        return _policy_only_response(
+            request_id,
+            intent_hash,
+            "INVALID_INPUT",
+            error=reason,
+        )
+
+    if not isinstance(request, dict) or set(request) != {"request_id", "intent"}:
+        return invalid("request must contain only request_id and intent")
+    if (
+        not isinstance(request_id, str)
+        or not request_id.strip()
+        or len(request_id) > MAX_REQUEST_ID_LENGTH
+    ):
+        return invalid("request_id must be a non-empty string of at most 128 characters")
+    intent = request.get("intent")
+    if not isinstance(intent, dict) or set(intent) != {
+        "action", "resource", "transaction"
+    }:
+        return invalid("intent must contain only action, resource, and transaction")
+    if intent.get("action") != _SUPPORTED_ACTION:
+        return invalid("only the simple native transfer action is supported")
+
+    resource = intent.get("resource")
+    if resource is not None and not _is_valid_account_id(resource):
+        return invalid("resource must be null or a valid lowercase NEAR account ID")
+    transaction = intent.get("transaction")
+    if not isinstance(transaction, dict) or any(
+        not isinstance(key, str) for key in transaction
+    ):
+        return invalid("transaction must be an object with string keys")
+    if set(transaction) - _TRANSACTION_FIELDS:
+        return invalid(
+            "unsupported transaction fields; contract calls and payload parsing are not supported"
+        )
+    recipient = transaction.get("recipient")
+    if not _is_valid_account_id(recipient):
+        return invalid(
+            "a simple transfer requires a valid lowercase NEAR account ID recipient"
+        )
+    if resource is not None and resource != recipient:
+        return invalid("resource must match transaction recipient")
+    amount_text = transaction.get("amount_yocto")
+    if not isinstance(amount_text, str) or not _AMOUNT_PATTERN.fullmatch(amount_text):
+        return invalid(
+            f"amount_yocto must be a canonical non-negative decimal string of at most {MAX_AMOUNT_DIGITS} digits"
+        )
+    for field in ("previous_interactions", "account_age_days"):
+        value = transaction.get(field)
+        if field in transaction and (
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+        ):
+            return invalid(f"{field} must be a non-negative integer")
+    for field in (
+        "recipient_is_contract",
+        "recipient_code_changed",
+        "known_malicious",
+    ):
+        if field in transaction and not isinstance(transaction[field], bool):
+            return invalid(f"{field} must be a boolean")
+
+    try:
+        local_policy = _load_policy(policy_path)
+    except (OSError, UnicodeDecodeError, TypeError, ValueError) as error:
+        return _policy_only_response(
+            request_id,
+            intent_hash,
+            "ERROR",
+            error=f"local policy configuration error: {type(error).__name__}",
+        )
+
+    try:
+        policy = _IntentPolicy(local_policy, int(amount_text))
+        decision = policy.evaluate(_SUPPORTED_ACTION, resource or recipient)
+        return _policy_only_response(
+            request_id,
+            intent_hash,
+            "POLICY_EVALUATED",
+            allowed=decision.allowed,
+            reason=decision.reason,
+            matched_rule=decision.matched_rule,
+        )
+    except Exception as error:
+        return _policy_only_response(
+            request_id,
+            intent_hash,
+            "ERROR",
+            error=f"policy evaluation failed: {type(error).__name__}",
+        )
+
+
 def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant {value} is not accepted")
 
@@ -325,11 +444,18 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def main() -> int:
     """Read one bounded JSON request from stdin and write one JSON response."""
+    policy_only = sys.argv[1:] == ["--policy-only"]
     raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
     if len(raw) > MAX_INPUT_BYTES:
-        response = _empty_response(
-            "", "", SimulationStatus.INVALID_INPUT.value,
-            "request exceeds the 65536-byte input limit",
+        response = (
+            _policy_only_response(
+                "", "", "INVALID_INPUT", error="request exceeds the 65536-byte limit"
+            )
+            if policy_only
+            else _empty_response(
+                "", "", SimulationStatus.INVALID_INPUT.value,
+                "request exceeds the 65536-byte limit",
+            )
         )
     else:
         try:
@@ -338,16 +464,24 @@ def main() -> int:
                 parse_constant=_reject_json_constant,
                 object_pairs_hook=_reject_duplicate_json_keys,
             )
-            response = evaluate_request(request, os.environ.get(POLICY_ENV_VAR))
+            response = (
+                evaluate_policy_request(request, os.environ.get(POLICY_ENV_VAR))
+                if policy_only
+                else evaluate_request(request, os.environ.get(POLICY_ENV_VAR))
+            )
         except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as error:
-            response = _empty_response(
-                "", "", SimulationStatus.ERROR.value,
-                f"invalid JSON request: {type(error).__name__}",
+            message = f"invalid JSON request: {type(error).__name__}"
+            response = (
+                _policy_only_response("", "", "ERROR", error=message)
+                if policy_only
+                else _empty_response("", "", SimulationStatus.ERROR.value, message)
             )
         except Exception as error:  # Fail closed across the process boundary.
-            response = _empty_response(
-                "", "", SimulationStatus.ERROR.value,
-                f"adapter error: {type(error).__name__}",
+            message = f"adapter error: {type(error).__name__}"
+            response = (
+                _policy_only_response("", "", "ERROR", error=message)
+                if policy_only
+                else _empty_response("", "", SimulationStatus.ERROR.value, message)
             )
 
     sys.stdout.write(json.dumps(response, separators=(",", ":"), ensure_ascii=False))

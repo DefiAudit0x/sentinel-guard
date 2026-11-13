@@ -79,7 +79,7 @@ Sentinel Guard addresses key attack vectors facing automated agents and NEAR app
 
 ## Limitations
 
-- **Local / In-Memory Evaluation**: The core simulator does not fetch RPC state. The separate testnet preflight reads account state only after local evaluation returns `ALLOW`; that read is not a guarantee of transaction safety.
+- **Local / In-Memory Evaluation**: The core simulator does not fetch RPC state. The separate testnet preflight first checks policy only, then reads sender and recipient account state when policy allows and a configured baseline exists; it runs risk afterward without inventing missing history, so the final result may still be `WARN` / `NEEDS_REVIEW`. Those reads are not a guarantee of transaction safety.
 - **Static Policy Rules**: Current policy rules require explicit configuration in code or local policy files. The engine evaluates an action/resource pair against in-memory rules, gives explicit deny rules precedence, and denies by default when no rule permits an action.
 
 ## Requirements
@@ -227,7 +227,7 @@ Only the unused `raw.githubusercontent.com` origin was removed from `connect-src
 
 ### NEAR testnet read-only preflight
 
-`examples/near_testnet_preflight.js` adds a separate, read-only adapter for a simple native NEAR transfer intent. It requires a [NEAR Connect](https://docs.near.org/web3-apps/tutorials/wallet-login) connector configured with `network: "testnet"` and an already-connected wallet. The host application must handle any wallet connection through its own user-initiated flow; this adapter never calls `connect()`. It checks that the fixed RPC endpoint reports `chain_id: "testnet"`, reads the selected account with the read-only `status` and `query` RPC methods, and passes the exact `transfer` action, recipient/resource, amount, and supplied risk context through the local Sentinel Guard bridge.
+`examples/near_testnet_preflight.js` adds a separate, read-only adapter for a simple native NEAR transfer intent. It requires a [NEAR Connect](https://docs.near.org/web3-apps/tutorials/wallet-login) connector configured with `network: "testnet"` and an already-connected wallet. The host application must handle any wallet connection through its own user-initiated flow; this adapter never calls `connect()`. It first runs a policy-only gate; policy denial, policy error, or invalid input stops before wallet access and RPC. Only after policy allows and a matching operator baseline is available does it read the selected sender and recipient using the fixed Testnet RPC's read-only `status` and `query` (`view_account`) methods. Risk runs once afterward with the caller's context unchanged and the recipient contract/code-change signals derived from RPC. Missing account-age or interaction history is never filled in; it can leave the final result at `NEEDS_REVIEW` after the read-only checks.
 
 ```js
 const { preflightTestnetNativeTransfer } = require("./near_testnet_preflight.js");
@@ -240,10 +240,12 @@ const result = await preflightTestnetNativeTransfer({
   amountYocto: "1000000000000000000000000",
   context: { previous_interactions: 8, account_age_days: 400 },
 });
-console.log(result.status, result.guard.decision);
+console.log(result.status, result.guard?.decision ?? "no final guard", result.recipientCodeCheck?.status ?? "not checked");
 ```
 
-`PREPARED_NOT_SUBMITTED` means only that this local prototype returned `ALLOW` and an account snapshot was read. The adapter has no signing or submission path: it does not call `signAndSendTransaction`, sign any payload, hold a key, or broadcast. `WARN`/`BLOCK` stops before wallet and RPC access. The test suite mocks RPC responses and does not contact NEAR. This prototype's rules and caller-provided context are experimental; a preflight result is neither a safety guarantee nor authorization to transact. The official [NEAR Connect repository](https://github.com/azbang/near-connect) describes the connector API; a real wallet connection remains a separate user interaction.
+The recipient code-hash baseline must be supplied out-of-band by the operator in the server-side `SENTINEL_GUARD_CODE_HASH_BASELINES` environment setting as JSON records with exactly `network`, `account_id`, and `code_hash` fields. The configuration is matched to both `testnet` and the exact recipient; it must not be embedded in browser code or public files. The adapter never learns a baseline from an RPC response. A missing/invalid baseline, missing account, malformed RPC response, timeout, or other RPC failure produces `NEEDS_REVIEW` with code-hash status `UNKNOWN`, not an unchanged-code signal or final `ALLOW`; these results have no final `guard`, and retain the earlier policy-only result as `preliminaryPolicy`. `recipient_is_contract` and `recipient_code_changed` are reserved in this preflight context and are computed from the recipient's current hash and the configured baseline; `known_malicious` remains caller-supplied and is not independently verified.
+
+`PREPARED_NOT_SUBMITTED` means only that the policy-only gate allowed the request, both account reads succeeded, the recipient hash was compared to its configured baseline, and the final risk evaluation returned `ALLOW`. The adapter has no signing or submission path: it does not call `signAndSendTransaction`, sign any payload, hold a key, or broadcast. A final risk `WARN`/`BLOCK` prevents a prepared result, though the read-only account requests have already occurred. The test suite mocks RPC responses and does not contact NEAR. This prototype's rules and caller-provided context are experimental; a preflight result is neither a safety guarantee nor authorization to transact. The official [NEAR Connect repository](https://github.com/azbang/near-connect) describes the connector API; a real wallet connection remains a separate user interaction.
 
 An `ALLOW` from this prototype is not a policy approval or authorization for a real transfer. The example policy is only test data, and caller-provided risk context and the prototype's risk heuristics are experimental.
 

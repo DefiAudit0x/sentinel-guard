@@ -9,7 +9,10 @@ const {
   preflightTestnetNativeTransfer,
   TESTNET_RPC_URL,
 } = require("../examples/near_testnet_preflight.js");
-const { runPythonAdapter } = require("../examples/guarded_agent_bridge.js");
+const {
+  runPythonAdapter,
+  runPythonPolicyAdapter,
+} = require("../examples/guarded_agent_bridge.js");
 
 const LOOPBACK_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4173;
@@ -154,6 +157,7 @@ function resolveStaticFile(urlPath, staticRoot) {
 function createLocalUiServer({
   preflight = preflightTestnetNativeTransfer,
   adapterRunner = (serializedRequest) => runPythonAdapter(serializedRequest),
+  policyAdapterRunner = (serializedRequest) => runPythonPolicyAdapter(serializedRequest),
   fetchImpl = globalThis.fetch,
   staticRoot = DEFAULT_STATIC_ROOT,
   policyPath,
@@ -184,6 +188,7 @@ function createLocalUiServer({
           requestId: randomUUID(),
           fetchImpl,
           adapterRunner,
+          policyAdapterRunner,
         });
         return sendJson(response, 200, result);
       }

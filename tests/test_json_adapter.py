@@ -5,8 +5,9 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from sentinel_guard.json_adapter import evaluate_request
+from sentinel_guard.json_adapter import evaluate_policy_request, evaluate_request
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
@@ -35,6 +36,9 @@ def make_request(**updates):
 class JsonAdapterTests(unittest.TestCase):
     def evaluate(self, request, policy_path=DEMO_POLICY_PATH):
         return evaluate_request(request, policy_path)
+
+    def evaluate_policy_only(self, request, policy_path=DEMO_POLICY_PATH):
+        return evaluate_policy_request(request, policy_path)
 
     @staticmethod
     def write_policy(path, recipients):
@@ -67,6 +71,58 @@ class JsonAdapterTests(unittest.TestCase):
         )
         self.assertEqual(response["risk"]["decision"], "ALLOW")
         self.assertEqual(response["risk"]["risk_score"], 0)
+
+    def test_policy_only_gate_returns_no_risk_result(self):
+        request = make_request()
+        request["intent"]["transaction"].pop("previous_interactions")
+        request["intent"]["transaction"].pop("account_age_days")
+
+        with patch(
+            "sentinel_guard.json_adapter.simulate_transaction",
+            side_effect=AssertionError("risk engine must not run in policy-only mode"),
+        ):
+            response = self.evaluate_policy_only(request)
+
+        self.assertEqual(
+            set(response),
+            {"request_id", "intent_hash", "status", "allowed", "reason", "matched_rule", "error"},
+        )
+        self.assertEqual(response["status"], "POLICY_EVALUATED")
+        self.assertTrue(response["allowed"])
+        self.assertEqual(response["matched_rule"], "json-policy-recipient-allow-list")
+        self.assertIsNone(response["error"])
+        self.assertNotIn("risk", response)
+
+    def test_policy_only_denies_unapproved_recipient_without_running_risk(self):
+        request = make_request()
+        request["intent"]["resource"] = "mallory.near"
+        request["intent"]["transaction"]["recipient"] = "mallory.near"
+
+        response = self.evaluate_policy_only(request)
+
+        self.assertEqual(response["status"], "POLICY_EVALUATED")
+        self.assertFalse(response["allowed"])
+        self.assertEqual(response["reason"], "recipient_not_allowed")
+        self.assertIsNone(response["matched_rule"])
+
+    def test_policy_only_missing_policy_or_invalid_input_fails_closed(self):
+        missing_policy = self.evaluate_policy_only(make_request(), policy_path=None)
+        self.assertEqual(missing_policy["status"], "ERROR")
+        self.assertIsNone(missing_policy["allowed"])
+        self.assertIsNotNone(missing_policy["error"])
+
+        invalid = make_request()
+        invalid["intent"]["transaction"]["amount_yocto"] = "01"
+        invalid_response = self.evaluate_policy_only(invalid)
+        self.assertEqual(invalid_response["status"], "INVALID_INPUT")
+        self.assertIsNone(invalid_response["allowed"])
+        self.assertIsNotNone(invalid_response["error"])
+
+        invalid_history = make_request()
+        invalid_history["intent"]["transaction"]["account_age_days"] = -1
+        history_response = self.evaluate_policy_only(invalid_history)
+        self.assertEqual(history_response["status"], "INVALID_INPUT")
+        self.assertIsNone(history_response["allowed"])
 
     def test_explicit_recipient_is_allowed_at_the_exact_amount_cap(self):
         request = make_request()

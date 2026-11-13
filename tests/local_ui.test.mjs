@@ -304,8 +304,10 @@ test("discloses Meteor SDK sign-in scope, separate transfer review, and RPC data
   assert.match(markup, /two-minute deadline from review creation.*remains active after you click Sign and ends only when the wallet prompt starts.*If it expires before then, the wallet prompt will not open/i);
   assert.match(markup, /this page cannot cancel it/i);
   const rpcDisclosure = markup.slice(rpcIndex, preflightIndex);
-  assert.match(rpcDisclosure, /If the local guard returns ALLOW.*selected public account ID to <code>https:\/\/rpc\.testnet\.near\.org<\/code> for a read-only account lookup/i);
-  assert.match(rpcDisclosure, /WARN or BLOCK stops before that RPC read/i);
+  assert.match(rpcDisclosure, /policy-only check runs before any RPC/i);
+  assert.match(rpcDisclosure, /If policy allows the request and the other preflight checks pass,.*selected sender and recipient public account IDs to <code>https:\/\/rpc\.testnet\.near\.org<\/code> for read-only account lookups/i);
+  assert.match(rpcDisclosure, /Final risk evaluation runs after those account reads and may return WARN or BLOCK/i);
+  assert.doesNotMatch(rpcDisclosure, /WARN or BLOCK stops before that RPC read/i);
 });
 
 test("UI does not connect on mount and runs only read-only preflight after an explicit click", async () => {
