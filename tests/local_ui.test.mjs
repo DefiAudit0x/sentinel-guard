@@ -104,6 +104,13 @@ async function makeSelfTransferApp({
   };
   const document = makeDocument();
   const windowObject = new FakeWindow();
+  const timers = [];
+  const setTimeoutImpl = (callback, delay) => {
+    const timer = { callback, delay, cleared: false, fired: false };
+    timers.push(timer);
+    return timer;
+  };
+  const clearTimeoutImpl = (timer) => { timer.cleared = true; };
   document.elements.get("#previous-interactions").value = "3";
   document.elements.get("#account-age-days").value = "365";
   const wallet = makeConnectedWallet(calls, getAccountsImpl || (async () => walletAccounts));
@@ -111,6 +118,7 @@ async function makeSelfTransferApp({
     calls.signAndSendTransaction += 1;
     calls.signingParams = params;
     calls.signingOptions = options;
+    options.onWalletPromptStarted?.();
     if (walletError) throw walletError;
     return { transaction: "mock-only" };
   };
@@ -122,6 +130,8 @@ async function makeSelfTransferApp({
     connectionEnabled: true,
     clock: () => now,
     monotonicClock: monotonicClockImpl || (() => monotonicNow),
+    setTimeoutImpl,
+    clearTimeoutImpl,
     windowObject,
     async fetchImpl(url, options) {
       calls.requests.push({ url, options });
@@ -148,6 +158,12 @@ async function makeSelfTransferApp({
     },
     setWallNow(value) { now = value; },
     setMonotonicNow(value) { monotonicNow = value; },
+    fireTimer(delay) {
+      const timer = timers.find((item) => item.delay === delay && !item.cleared && !item.fired);
+      assert.ok(timer, `no active timer with delay ${delay}`);
+      timer.fired = true;
+      timer.callback();
+    },
   };
 }
 
@@ -285,6 +301,8 @@ test("discloses Meteor SDK sign-in scope, separate transfer review, and RPC data
   assert.match(markup, /Testnet account record saved by Meteor SDK/i);
   assert.match(markup, /not a live wallet account list/i);
   assert.match(markup, /not proof of current wallet ownership/i);
+  assert.match(markup, /two-minute deadline from review creation.*remains active after you click Sign and ends only when the wallet prompt starts.*If it expires before then, the wallet prompt will not open/i);
+  assert.match(markup, /this page cannot cancel it/i);
   const rpcDisclosure = markup.slice(rpcIndex, preflightIndex);
   assert.match(rpcDisclosure, /If the local guard returns ALLOW.*selected public account ID to <code>https:\/\/rpc\.testnet\.near\.org<\/code> for a read-only account lookup/i);
   assert.match(rpcDisclosure, /WARN or BLOCK stops before that RPC read/i);
@@ -509,12 +527,14 @@ test("mocked fixed transfer uses the Testnet account record saved by Meteor SDK 
   assert.equal(transaction.actions.length, 1);
   assert.equal(transaction.actions[0].enum, "transfer");
   assert.equal(transaction.actions[0].transfer.deposit, BigInt(TESTNET_SELF_TRANSFER_AMOUNT_YOCTO));
+  assert.equal(document.elements.get("#prepare-self-transfer").disabled, true, "a completed wallet prompt keeps this page session locked");
 });
 
 test("Meteor adapter does not open the wallet prompt when SDK action creation outlives the review", async () => {
   const calls = { actions: [], prompts: [] };
   const actionStarted = deferred();
   const releaseAction = deferred();
+  let promptStarted = 0;
   const signedInAccount = {
     identifier: {
       blockchain: "near",
@@ -563,7 +583,13 @@ test("Meteor adapter does not open the wallet prompt when SDK action creation ou
     signerId: TESTNET_SELF_TRANSFER_ACCOUNT,
     receiverId: TESTNET_SELF_TRANSFER_ACCOUNT,
     actions: [{ type: "Transfer", params: { deposit: TESTNET_SELF_TRANSFER_AMOUNT_YOCTO } }],
-  }, { createdAt, expiresAt, monotonicCreatedAt, monotonicExpiresAt });
+  }, {
+    createdAt,
+    expiresAt,
+    monotonicCreatedAt,
+    monotonicExpiresAt,
+    onWalletPromptStarted() { promptStarted += 1; },
+  });
 
   await actionStarted.promise;
   now = expiresAt;
@@ -572,6 +598,7 @@ test("Meteor adapter does not open the wallet prompt when SDK action creation ou
   await assert.rejects(signing, /Transfer review expired before the wallet prompt could open/);
   assert.equal(calls.actions.filter(({ id }) => id === "near::sign_transactions").length, 1);
   assert.deepEqual(calls.prompts, ["near::sign_in"]);
+  assert.equal(promptStarted, 0, "an error before promptForExecution must not signal a wallet prompt");
 });
 
 test("Meteor adapter blocks a late wallet prompt when wall time moves backward during SDK action creation", async () => {
@@ -860,6 +887,32 @@ test("ALLOW cannot create a review when risk inputs change during the pending pr
   assert.equal(app.calls.signAndSendTransaction, 0);
 });
 
+test("a stalled read-only preflight times out, aborts the fetch, and releases the UI", async () => {
+  const request = deferred();
+  const requestStarted = deferred();
+  let requestSignal;
+  const app = await makeSelfTransferApp({
+    result: await makeSelfTransferResult(),
+    fetchImpl(_url, options) {
+      requestSignal = options.signal;
+      requestStarted.resolve();
+      return request.promise;
+    },
+  });
+  const preparing = app.document.elements.get("#prepare-self-transfer").emit("click");
+  await requestStarted.promise;
+  assert.equal(app.document.elements.get("#prepare-self-transfer").disabled, true);
+
+  app.fireTimer(15_000);
+  await preparing;
+
+  assert.equal(requestSignal.aborted, true);
+  assert.equal(app.document.elements.get("#transfer-review").hidden, true);
+  assert.match(app.document.elements.get("#self-transfer-status").textContent, /read-only preflight timed out/i);
+  assert.equal(app.document.elements.get("#prepare-self-transfer").disabled, false);
+  assert.equal(app.calls.signAndSendTransaction, 0);
+});
+
 test("review expiry while awaiting the saved account record blocks before calling the wallet", async () => {
   const accountReadStarted = deferred();
   const releaseAccountRead = deferred();
@@ -887,6 +940,23 @@ test("review expiry while awaiting the saved account record blocks before callin
   assert.equal(app.calls.signAndSendTransaction, 0);
   assert.equal(app.document.elements.get("#transfer-review").hidden, true);
   assert.match(app.document.elements.get("#self-transfer-status").textContent, /review expired/i);
+});
+
+test("an untouched fixed-transfer review closes automatically at its deadline", async () => {
+  const app = await makeSelfTransferApp({ result: await makeSelfTransferResult() });
+  await app.document.elements.get("#prepare-self-transfer").emit("click");
+  const expiresAt = Date.parse(JSON.parse(app.document.elements.get("#review-details").textContent).expiresAt);
+  assert.equal(app.document.elements.get("#transfer-review").hidden, false);
+  assert.equal(app.document.elements.get("#sign-self-transfer").disabled, false);
+
+  app.setNow(expiresAt);
+  app.fireTimer(120_000);
+
+  assert.equal(app.document.elements.get("#transfer-review").hidden, true);
+  assert.equal(app.document.elements.get("#sign-self-transfer").disabled, true);
+  assert.match(app.document.elements.get("#review-status").textContent, /no wallet prompt was opened/i);
+  await app.document.elements.get("#sign-self-transfer").emit("click");
+  assert.equal(app.calls.signAndSendTransaction, 0);
 });
 
 test("fixed self-transfer review fails closed when a monotonic clock is unavailable", async () => {
@@ -1007,6 +1077,41 @@ test("malformed preflight response cannot expose or invoke the mock signer", asy
   assert.equal(app.calls.signAndSendTransaction, 0);
 });
 
+test("page blur during a pending wallet prompt is not shown as cancellation and locks another attempt", async () => {
+  const app = await makeSelfTransferApp({ result: await makeSelfTransferResult() });
+  const prompt = deferred();
+  const requestStarted = deferred();
+  await app.document.elements.get("#prepare-self-transfer").emit("click");
+  app.wallet.signAndSendTransaction = async (params, options) => {
+    app.calls.signAndSendTransaction += 1;
+    app.calls.signingParams = params;
+    app.calls.signingOptions = options;
+    requestStarted.resolve();
+    return prompt.promise;
+  };
+
+  const signing = app.document.elements.get("#sign-self-transfer").emit("click");
+  await requestStarted.promise;
+  app.calls.signingOptions.onWalletPromptStarted?.();
+  await app.windowObject.emit("blur");
+
+  const pendingStatus = app.document.elements.get("#review-status").textContent;
+  assert.match(pendingStatus, /cannot cancel/i);
+  assert.match(pendingStatus, /may still be pending/i);
+  assert.doesNotMatch(pendingStatus, /review cancelled/i);
+  assert.equal(app.document.elements.get("#cancel-self-transfer").disabled, true);
+  assert.equal(app.document.elements.get("#prepare-self-transfer").disabled, true);
+  await app.document.elements.get("#cancel-self-transfer").emit("click");
+  assert.equal(app.calls.signAndSendTransaction, 1);
+
+  prompt.resolve({ transaction: "mock-only" });
+  await signing;
+  await app.document.elements.get("#prepare-self-transfer").emit("click");
+  assert.equal(app.document.elements.get("#prepare-self-transfer").disabled, true);
+  assert.equal(app.calls.signAndSendTransaction, 1);
+  assert.match(app.document.elements.get("#review-status").textContent, /locked for this page session/i);
+});
+
 test("a wallet-reported rejection is attempted once and is not retried automatically", async () => {
   const app = await makeSelfTransferApp({
     result: await makeSelfTransferResult(),
@@ -1016,7 +1121,34 @@ test("a wallet-reported rejection is attempted once and is not retried automatic
   await app.document.elements.get("#sign-self-transfer").emit("click");
   await app.document.elements.get("#sign-self-transfer").emit("click");
   assert.equal(app.calls.signAndSendTransaction, 1);
-  assert.match(app.document.elements.get("#review-status").textContent, /does not prove that nothing was broadcast/i);
+  assert.match(app.document.elements.get("#review-status").textContent, /outcome may be unknown/i);
+  assert.equal(app.document.elements.get("#prepare-self-transfer").disabled, true);
+});
+
+test("a pre-prompt adapter failure is not classified as an unknown wallet outcome", async () => {
+  const app = await makeSelfTransferApp({
+    fetchImpl: async () => ({ ok: true, async json() { return makeSelfTransferResult(); } }),
+  });
+  await app.document.elements.get("#prepare-self-transfer").emit("click");
+  app.wallet.signAndSendTransaction = async (params, options) => {
+    app.calls.signAndSendTransaction += 1;
+    app.calls.signingParams = params;
+    app.calls.signingOptions = options;
+    throw new Error("Meteor action creation failed");
+  };
+
+  await app.document.elements.get("#sign-self-transfer").emit("click");
+
+  const status = app.document.elements.get("#self-transfer-status").textContent;
+  assert.match(status, /wallet prompt was not opened/i);
+  assert.match(status, /no wallet action was requested/i);
+  assert.match(status, /Meteor action creation failed/i);
+  assert.doesNotMatch(status, /outcome may be unknown/i);
+  assert.equal(app.document.elements.get("#transfer-review").hidden, true);
+  assert.equal(app.document.elements.get("#prepare-self-transfer").disabled, false);
+  await app.document.elements.get("#prepare-self-transfer").emit("click");
+  assert.equal(app.document.elements.get("#transfer-review").hidden, false, "a fresh review remains available after a pre-prompt failure");
+  assert.equal(app.calls.signAndSendTransaction, 1);
 });
 
 

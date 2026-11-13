@@ -162,7 +162,12 @@ export function createMeteorConnectAdapter({
         },
       });
       assertReviewDeadline(reviewDeadline);
-      return action.promptForExecution();
+      const promptForExecution = action?.promptForExecution;
+      if (typeof promptForExecution !== "function") {
+        throw new Error("Meteor SDK transaction action does not expose a wallet prompt.");
+      }
+      reviewDeadline.onWalletPromptStarted?.();
+      return promptForExecution.call(action);
     },
   };
 

@@ -2,6 +2,8 @@
 
 A local-first prototype for deterministic policy and risk evaluation in NEAR applications and autonomous AI agents. Sentinel Guard produces explainable ALLOW, WARN, or BLOCK results for supported local inputs; these results do not prove that a real transaction is safe or constrain downstream wallet or executor behavior.
 
+Prepared for **NEAR HACKATHON 2026** in the **AI Security & Defense (`security`)** track. The implemented NEAR Testnet path runs a local guard and read-only account/RPC preflight; an optional fixed 0.001 NEAR self-transfer demo can request a wallet action only after a separate review and click. These experimental client-side checks do not enforce policy on a real signer or wallet, and a live transfer has not been tested.
+
 ## Problem
 
 AI agents and automated applications operating on NEAR need to execute transfers and contract calls without exposing user treasuries to unauthorized actions, drained funds, or recently mutated smart contracts. Relying on probabilistic LLM prompts for spending security is brittle, while scattering ad-hoc checks across application code makes security decisions opaque, hard to audit, and impossible to reproduce deterministically.
@@ -78,7 +80,7 @@ Sentinel Guard addresses key attack vectors facing automated agents and NEAR app
 ## Limitations
 
 - **Local / In-Memory Evaluation**: The core simulator does not fetch RPC state. The separate testnet preflight reads account state only after local evaluation returns `ALLOW`; that read is not a guarantee of transaction safety.
-- **Static Policy Rules**: Current policy rules require explicit configuration in code or local policy files. evaluate an action/resource pair against in-memory rules, give explicit deny rules precedence, and deny by default when no rule permits an action.
+- **Static Policy Rules**: Current policy rules require explicit configuration in code or local policy files. The engine evaluates an action/resource pair against in-memory rules, gives explicit deny rules precedence, and denies by default when no rule permits an action.
 
 ## Requirements
 
@@ -116,10 +118,10 @@ Run the complete local verification sequence from the project root:
 ./scripts/verify.sh
 ```
 
-You can also invoke the script by its absolute path from outside the project directory:
+From outside the project directory, invoke the script using the path to your local clone (replace `/path/to/sentinel-guard` with that location):
 
 ```bash
-/workspace/sentinel-guard/scripts/verify.sh
+/path/to/sentinel-guard/scripts/verify.sh
 ```
 
 The script finds the project root from its own location, uses the existing `.venv/bin/python`, runs the Node tests, and builds the UI bundle. It does not install dependencies or connect to the internet; `pytest` and the dependencies installed by `npm ci` must already be available.
@@ -219,7 +221,7 @@ Open `http://127.0.0.1:4173/`. The server binds only to loopback; it serves the 
 
 The Connect button lazily loads the SDK and requests only `near::sign_in` for `{ blockchain: "near", network: "testnet" }` after an explicit click. It does not request a function-call key, a message signature, or a transaction during sign-in. SDK initialization uses `webpage_local_storage`; the Meteor Mobile bridge and its account-transfer/new-key-transfer surfaces are disabled, and there is no auto-connect. For later gates, the UI re-reads the exact signed-in Testnet account from Meteor SDK storage; the SDK does not expose the previous connector's live wallet-account-list query.
 
-The fixed-transfer path is separate from sign-in and accepts only one native self-transfer from `defiaudit0x.testnet` to itself for exactly `0.001` NEAR (`1000000000000000000000` yoctoNEAR). A local `ALLOW`, the exact result status/request ID/intent hash, a two-minute immutable review, and a separate second click are required. At the signing boundary, the UI rechecks the review binding and selected Testnet account, then sends one SDK `near::sign_transactions` action targeted to that account with `useFunctionCallKey: false`; the wallet must still show its own confirmation. The UI reads the exact Testnet account record saved by Meteor SDK, not a live wallet-account list; that record alone is not proof of current wallet ownership. The existing preflight remains read-only, and the local server's client-supplied account ID is not proof of ownership. This is a demonstration-only client-side gate, not production enforcement or a fee estimate. The SDK and wallet are third-party components and have not been audited here.
+The fixed-transfer path is separate from sign-in and accepts only one native self-transfer from `defiaudit0x.testnet` to itself for exactly `0.001` NEAR (`1000000000000000000000` yoctoNEAR). A local `ALLOW`, the exact result status/request ID/intent hash, a two-minute immutable review, and a separate second click are required; an untouched review closes automatically at its deadline. At the signing boundary, the UI rechecks the review binding and selected Testnet account, then sends one SDK `near::sign_transactions` action targeted to that account with `useFunctionCallKey: false`; the wallet must still show its own confirmation. After the request is handed to the wallet, the page cannot cancel an opened prompt and locks this fixed-transfer flow for the rest of the loaded page session. Check the wallet/Testnet outcome before reloading or trying again; reloading resets only this local UI state and does not establish what happened. The UI reads the exact Testnet account record saved by Meteor SDK, not a live wallet-account list; that record alone is not proof of current wallet ownership. The existing preflight remains read-only, and the local server's client-supplied account ID is not proof of ownership. This is a demonstration-only client-side gate, not production enforcement or a fee estimate. The SDK and wallet are third-party components and have not been audited here.
 
 Only the unused `raw.githubusercontent.com` origin was removed from `connect-src` and `img-src`; `rpc.testnet.near.org` and every other security directive remain unchanged. No wildcard or new inline-script permission was added. UI tests mock the Meteor SDK, wallet action, policy results, and RPC responses. They do not contact Meteor or submit a transaction. **A live transfer has not been tested.** Run the UI tests with `npm run test:ui` or include them in `./scripts/verify.sh`. No public deployment is created.
 

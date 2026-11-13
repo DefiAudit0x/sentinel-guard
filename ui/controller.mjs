@@ -8,6 +8,7 @@ import {
 
 export const TESTNET_RECIPIENT = "defiaudit0x.testnet";
 export const MAX_AMOUNT_YOCTO = 100000000000000000000000n;
+const PREFLIGHT_TIMEOUT_MS = 15_000;
 const YOCTO_PER_NEAR = 1000000000000000000000000n;
 const NEAR_AMOUNT_PATTERN = /^(?:0|[1-9][0-9]*)(?:\.([0-9]{1,24}))?$/;
 
@@ -64,6 +65,8 @@ export function mountUI({
   connectionEnabled = false,
   clock = () => Date.now(),
   monotonicClock = () => globalThis.performance?.now?.(),
+  setTimeoutImpl = globalThis.setTimeout,
+  clearTimeoutImpl = globalThis.clearTimeout,
   windowObject = globalThis.window,
   cryptoObject = globalThis.crypto,
 }) {
@@ -74,6 +77,9 @@ export function mountUI({
     throw new TypeError("A document is required.");
   }
   if (typeof monotonicClock !== "function") throw new TypeError("A monotonic review clock is required.");
+  if (typeof setTimeoutImpl !== "function" || typeof clearTimeoutImpl !== "function") {
+    throw new TypeError("Review expiry and preflight timeout timers are required.");
+  }
   const connectButton = document.querySelector("#connect-wallet");
   const accountSelect = document.querySelector("#account-select");
   const walletStatus = document.querySelector("#wallet-status");
@@ -112,6 +118,9 @@ export function mountUI({
   let lifecycleFocused = true;
   let lifecyclePageActive = true;
   let reviewWallClockState = null;
+  let reviewExpiryTimer = null;
+  let walletRequestPending = false;
+  let walletOutcomeRequiresVerification = false;
   const attemptedRequestIds = new Set();
   const consumedRequestIds = new Set();
   const canConnect = connectionEnabled === true;
@@ -131,15 +140,52 @@ export function mountUI({
   const updateButtons = () => {
     connectButton.disabled = !canConnect || busy || connected;
     preflightButton.disabled = busy || !connected;
-    prepareSelfTransferButton.disabled = busy || !connected || !isLifecycleActive();
+    prepareSelfTransferButton.disabled = busy || !connected || !isLifecycleActive()
+      || walletOutcomeRequiresVerification;
     signSelfTransferButton.disabled = busy || !review || attemptedRequestIds.has(review.requestId);
-    cancelSelfTransferButton.disabled = busy || !review;
+    cancelSelfTransferButton.disabled = busy || !review || attemptedRequestIds.has(review.requestId);
   };
   const setBusy = (value) => {
     busy = value;
     updateButtons();
   };
+  const fetchPreflight = async (url, options) => {
+    const controller = new globalThis.AbortController();
+    let timeoutId;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = setTimeoutImpl(() => {
+        controller.abort();
+        reject(new Error("Local read-only preflight timed out. No transaction-signing or submission call was made."));
+      }, PREFLIGHT_TIMEOUT_MS);
+    });
+    const request = Promise.resolve().then(async () => {
+      const response = await fetchImpl(url, { ...options, signal: controller.signal });
+      const result = await response.json();
+      return { response, result };
+    });
+    try {
+      return await Promise.race([request, timeout]);
+    } finally {
+      if (timeoutId !== undefined) clearTimeoutImpl(timeoutId);
+    }
+  };
+  const clearReviewExpiryTimer = () => {
+    if (reviewExpiryTimer !== null) {
+      clearTimeoutImpl(reviewExpiryTimer);
+      reviewExpiryTimer = null;
+    }
+  };
   const discardReview = (message) => {
+    if (review && (walletRequestPending || walletOutcomeRequiresVerification)) {
+      const outcomeMessage = walletRequestPending
+        ? "A wallet request may still be pending. This page cannot cancel a wallet prompt after it opens; verify wallet/Testnet before any retry."
+        : "A wallet request was handed off. This page cannot cancel it; verify the outcome in wallet/Testnet before any further action.";
+      setText(reviewStatus, outcomeMessage);
+      setText(selfTransferStatus, outcomeMessage);
+      updateButtons();
+      return;
+    }
+    clearReviewExpiryTimer();
     if (review) consumedRequestIds.add(review.requestId);
     review = null;
     reviewedUiSnapshot = null;
@@ -149,8 +195,43 @@ export function mountUI({
     cancelSelfTransferButton.disabled = true;
     if (message) setText(reviewStatus, message);
   };
+  const scheduleReviewExpiry = (pendingReview) => {
+    if (review !== pendingReview) return;
+    clearReviewExpiryTimer();
+    const wallNow = clock();
+    const monotonicNow = monotonicClock();
+    if (!reviewWallClockState || !Number.isSafeInteger(wallNow)
+      || wallNow < reviewWallClockState.lastObserved || wallNow < pendingReview.createdAt
+      || wallNow >= pendingReview.expiresAt || !Number.isFinite(monotonicNow)
+      || monotonicNow < pendingReview.monotonicCreatedAt
+      || monotonicNow >= pendingReview.monotonicExpiresAt) {
+      const message = "Review expired or its clock became invalid; no wallet prompt was opened. Prepare a fresh review.";
+      discardReview(message);
+      setText(selfTransferStatus, message);
+      updateButtons();
+      return;
+    }
+    reviewWallClockState.lastObserved = wallNow;
+    const remaining = Math.min(
+      pendingReview.expiresAt - wallNow,
+      pendingReview.monotonicExpiresAt - monotonicNow,
+    );
+    reviewExpiryTimer = setTimeoutImpl(() => {
+      reviewExpiryTimer = null;
+      scheduleReviewExpiry(pendingReview);
+    }, Math.max(1, Math.ceil(remaining)));
+  };
   const invalidateForLifecycle = (message) => {
     lifecycleGeneration += 1;
+    if (walletRequestPending || walletOutcomeRequiresVerification) {
+      const outcomeMessage = walletRequestPending
+        ? "A wallet request may still be pending. This page cannot cancel a wallet prompt after it opens; verify wallet/Testnet before any retry."
+        : "A wallet request was handed off. This page cannot cancel it; verify the outcome in wallet/Testnet before any further action.";
+      setText(reviewStatus, outcomeMessage);
+      setText(selfTransferStatus, outcomeMessage);
+      updateButtons();
+      return;
+    }
     discardReview(message);
     setText(selfTransferStatus, message);
     updateButtons();
@@ -282,7 +363,7 @@ export function mountUI({
     setText(resultDetails, "");
     setBusy(true);
     try {
-      const response = await fetchImpl("/api/preflight", {
+      const { response, result } = await fetchPreflight("/api/preflight", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -292,7 +373,6 @@ export function mountUI({
           context,
         }),
       });
-      const result = await response.json();
       if (!response.ok) throw new Error(result.error || `Local preflight failed (${response.status}).`);
       setText(resultStatus, `${result.status} · guard ${result.guard?.decision || "UNKNOWN"}`);
       setText(resultDetails, JSON.stringify({
@@ -314,7 +394,7 @@ export function mountUI({
   });
 
   prepareSelfTransferButton.addEventListener("click", async () => {
-    if (busy || !connected) return;
+    if (busy || !connected || walletOutcomeRequiresVerification) return;
     if (!isLifecycleActive()) {
       invalidateForLifecycle("The page is not active; return to it and prepare a fresh review.");
       return;
@@ -362,7 +442,7 @@ export function mountUI({
       }
 
       // The server uses accountId only for read-only RPC; this saved record is not a live ownership check.
-      const response = await fetchImpl("/api/preflight", {
+      const { response, result } = await fetchPreflight("/api/preflight", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -372,7 +452,6 @@ export function mountUI({
           context,
         }),
       });
-      const result = await response.json();
       assertUiSnapshotCurrent();
       if (!response.ok) throw new Error(result.error || `Local preflight failed (${response.status}).`);
       if (result?.guard?.decision !== "ALLOW") {
@@ -418,6 +497,7 @@ export function mountUI({
       }, null, 2));
       setText(selfTransferStatus, "Local guard ALLOW. Review every detail below; no wallet signing or submission has been requested yet.");
       setText(reviewStatus, "This review expires in two minutes and is bound to the exact guarded intent and saved Testnet account record.");
+      scheduleReviewExpiry(nextReview);
     } catch (error) {
       transferReview.hidden = true;
       review = null;
@@ -437,6 +517,7 @@ export function mountUI({
     const approvedReview = review;
     const signingLifecycleGeneration = lifecycleGeneration;
     setBusy(true);
+    let walletPromptStarted = false;
     setText(reviewStatus, "Rechecking the exact immutable review and Meteor SDK's saved Testnet account record before opening the wallet…");
     try {
       if (!reviewedUiSnapshot
@@ -478,7 +559,8 @@ export function mountUI({
       }
       attemptedRequestIds.add(approvedReview.requestId);
       consumedRequestIds.add(approvedReview.requestId);
-      setText(reviewStatus, "Requesting the wallet’s confirmation for the exact displayed Testnet transfer…");
+      clearReviewExpiryTimer();
+      setText(reviewStatus, "Preparing the wallet request for the exact displayed Testnet transfer…");
       // Pass the exact frozen payload reviewed above. Never reconstruct from mutable form fields.
       const reviewDeadline = Object.freeze({
         createdAt: approvedReview.createdAt,
@@ -488,27 +570,42 @@ export function mountUI({
         monotonicExpiresAt: approvedReview.monotonicExpiresAt,
         isLifecycleActive: () => isLifecycleActive()
           && lifecycleGeneration === signingLifecycleGeneration,
+        onWalletPromptStarted: () => {
+          walletPromptStarted = true;
+          walletRequestPending = true;
+          walletOutcomeRequiresVerification = true;
+          setText(reviewStatus, "The wallet prompt is opening for the exact displayed Testnet transfer; its result may remain pending.");
+          setText(selfTransferStatus, "A wallet prompt request has started. This page cannot cancel it; verify wallet/Testnet before any retry.");
+          updateButtons();
+        },
       });
       await wallet.signAndSendTransaction(approvedReview.signingParams, reviewDeadline);
-      setText(reviewStatus, "The wallet returned a result. Verify the outcome in the wallet/Testnet before taking any further action.");
+      setText(reviewStatus, "The wallet returned a result. The fixed-transfer flow is locked for this page session; verify the outcome in wallet/Testnet before reloading or taking another action.");
     } catch (error) {
-      if (attemptedRequestIds.has(approvedReview.requestId)) {
-        setText(reviewStatus, `The wallet request returned an error or was rejected: ${error instanceof Error ? error.message : "unknown error"}. An error does not prove that nothing was broadcast; verify before any retry.`);
+      if (walletPromptStarted) {
+        walletOutcomeRequiresVerification = true;
+        const message = `The wallet request returned an error or was rejected: ${error instanceof Error ? error.message : "unknown error"}. This page cannot cancel a prompt after it opens, and the outcome may be unknown. The fixed-transfer flow is locked for this page session; verify in wallet/Testnet before reloading or retrying.`;
+        setText(reviewStatus, message);
+        setText(selfTransferStatus, message);
       } else {
+        clearReviewExpiryTimer();
         consumedRequestIds.add(approvedReview.requestId);
         review = null;
         reviewedUiSnapshot = null;
         reviewWallClockState = null;
         transferReview.hidden = true;
-        setText(selfTransferStatus, error instanceof Error ? error.message : "Signing-boundary validation failed closed.");
+        const message = `The wallet prompt was not opened; no wallet action was requested. ${error instanceof Error ? error.message : "Signing-boundary validation failed closed."}`;
+        setText(reviewStatus, message);
+        setText(selfTransferStatus, message);
       }
     } finally {
+      walletRequestPending = false;
       setBusy(false);
     }
   });
 
   cancelSelfTransferButton.addEventListener("click", () => {
-    if (busy || !review) return;
+    if (busy || !review || attemptedRequestIds.has(review.requestId)) return;
     discardReview("Review cancelled. No wallet signing or submission call was made.");
     setText(selfTransferStatus, "Transfer review cancelled; prepare a fresh review if needed.");
     updateButtons();
@@ -518,6 +615,10 @@ export function mountUI({
     const invalidate = () => {
       uiInputRevision += 1;
       if (!review) return;
+      if (attemptedRequestIds.has(review.requestId)) {
+        updateButtons();
+        return;
+      }
       discardReview("Review cancelled because a reviewed input or selected account changed. Run a fresh preflight.");
       setText(selfTransferStatus, "A reviewed value changed; no wallet action was requested.");
       updateButtons();
