@@ -714,6 +714,44 @@ test("leaves unknown risk context out instead of inventing history", async () =>
   assert.equal(calls.signAndSendTransaction + calls.signAndSendTransactions + calls.signTransaction, 0);
 });
 
+test("shows the missing-baseline reason as UNKNOWN without a final ALLOW", async () => {
+  const calls = { createConnector: 0, connect: 0, getAccounts: 0, connectorWallet: 0, signAndSendTransaction: 0, signAndSendTransactions: 0, signTransaction: 0 };
+  const document = makeDocument();
+  const connector = makeConnector(calls, makeConnectedWallet(calls));
+  const reason = "No valid operator code-hash baseline is configured for this testnet recipient";
+  mountUI({
+    createConnector() { calls.createConnector += 1; return connector; },
+    document,
+    connectionEnabled: true,
+    async fetchImpl() {
+      return {
+        ok: true,
+        async json() {
+          return {
+            mode: "TESTNET_PREFLIGHT_READ_ONLY",
+            status: "NEEDS_REVIEW",
+            submitted: false,
+            guard: null,
+            preliminaryPolicy: { status: "POLICY_EVALUATED", allowed: true },
+            account: null,
+            intent: { transaction: { recipient: TESTNET_RECIPIENT, amount_yocto: "50000000000000000000000" } },
+            recipientCodeCheck: { status: "UNKNOWN", reason },
+          };
+        },
+      };
+    },
+  });
+
+  await document.elements.get("#connect-wallet").emit("click");
+  await document.elements.get("#preflight-form").emit("submit", { preventDefault() {} });
+
+  assert.match(document.elements.get("#result-status").textContent, /NEEDS_REVIEW · guard UNKNOWN/);
+  const displayed = JSON.parse(document.elements.get("#result-details").textContent);
+  assert.deepEqual(displayed.recipientCodeCheck, { status: "UNKNOWN", reason });
+  assert.equal(displayed.accountRead, false);
+  assert.equal(calls.signAndSendTransaction + calls.signAndSendTransactions + calls.signTransaction, 0);
+});
+
 
 test("fixed self-transfer requires a separate click and sends the same frozen exact payload once", async () => {
   const result = await makeSelfTransferResult();

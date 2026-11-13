@@ -116,9 +116,9 @@ def analyze_transaction(transaction: Mapping[str, Any]) -> RiskResult:
         )
 
     # Suspicious signals.
-    if recipient_code_changed and recipient_is_contract:
+    if recipient_code_changed:
         score += 50
-        reasons.append("Recipient contract code changed")
+        reasons.append("Recipient code hash changed")
 
     if amount_yocto > AMOUNT_RISK_THRESHOLD_YOCTO:
         score += 30

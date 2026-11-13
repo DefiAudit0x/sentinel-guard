@@ -383,6 +383,12 @@ export function mountUI({
         recipient: result.intent?.transaction?.recipient || TESTNET_RECIPIENT,
         amountYocto: result.intent?.transaction?.amount_yocto || amountYocto,
         submitted: result.submitted,
+        recipientCodeCheck: result.recipientCodeCheck
+          ? {
+            status: result.recipientCodeCheck.status,
+            reason: result.recipientCodeCheck.reason ?? null,
+          }
+          : null,
         note: "This generic preflight is read-only and does not call transaction signing or submission.",
       }, null, 2));
     } catch (error) {

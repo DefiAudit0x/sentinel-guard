@@ -159,7 +159,7 @@ class TransactionSimulatorTests(unittest.TestCase):
         self.assertEqual(
             result.risk.reasons,
             (
-                "Recipient contract code changed",
+                "Recipient code hash changed",
                 "Transaction amount exceeds threshold",
                 "Account is less than 7 days old",
                 "No previous interaction with recipient",
@@ -830,14 +830,14 @@ class TransactionSimulatorTests(unittest.TestCase):
         self.assertEqual(
             result.risk.reasons,
             (
-                "Recipient contract code changed",
+                "Recipient code hash changed",
                 "Recipient is a smart contract",
             ),
         )
         self.assertEqual(
             result.reasons,
             (
-                "Risk: Recipient contract code changed",
+                "Risk: Recipient code hash changed",
                 "Risk: Recipient is a smart contract",
             ),
         )

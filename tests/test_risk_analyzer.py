@@ -356,9 +356,13 @@ def test_recent_contract_code_change_is_blocked():
 
     assert result.decision == RiskDecision.BLOCK
     assert result.risk_score == 55
+    assert result.reasons == (
+        "Recipient code hash changed",
+        "Recipient is a smart contract",
+    )
 
 
-def test_code_change_does_not_add_risk_when_recipient_is_not_contract():
+def test_code_hash_change_adds_50_points_when_recipient_is_not_currently_a_contract():
     result = analyze_transaction({
         "recipient": "alice.near",
         "amount_yocto": 5 * YOCTO_PER_NEAR,
@@ -369,9 +373,9 @@ def test_code_change_does_not_add_risk_when_recipient_is_not_contract():
         "account_age_days": 100,
     })
 
-    assert result.decision == RiskDecision.ALLOW
-    assert result.risk_score == 0
-    assert "Recipient contract code changed" not in result.reasons
+    assert result.decision == RiskDecision.BLOCK
+    assert result.risk_score == 50
+    assert result.reasons == ("Recipient code hash changed",)
 
 
 def test_contract_signal_adds_only_five_risk_points_without_code_change():
@@ -388,7 +392,7 @@ def test_contract_signal_adds_only_five_risk_points_without_code_change():
     assert result.decision == RiskDecision.ALLOW
     assert result.risk_score == 5
     assert result.reasons == ("Recipient is a smart contract",)
-    assert "Recipient contract code changed" not in result.reasons
+    assert "Recipient code hash changed" not in result.reasons
 
 
 def test_invalid_recipient_is_blocked():

@@ -155,6 +155,58 @@ test("server preflight uses only a synthetic read-only account connector and moc
   }));
 });
 
+test("clean Quick Start without a code-hash baseline returns UNKNOWN before wallet or RPC access", async () => {
+  const previousBaseline = process.env[CODE_HASH_BASELINES_ENV_VAR];
+  delete process.env[CODE_HASH_BASELINES_ENV_VAR];
+  let walletCalls = 0;
+  let riskCalls = 0;
+  let rpcCalls = 0;
+  const preflight = (options) => {
+    const originalWallet = options.connector.wallet;
+    options.connector.wallet = async () => {
+      walletCalls += 1;
+      return originalWallet();
+    };
+    return preflightTestnetNativeTransfer(options);
+  };
+  const adapterRunner = (serialized) => {
+    riskCalls += 1;
+    return runPythonAdapter(serialized, undefined, testPolicyPath);
+  };
+  const policyAdapterRunner = (serialized) => runPythonPolicyAdapter(serialized, undefined, testPolicyPath);
+
+  try {
+    await withServer({
+      preflight,
+      adapterRunner,
+      policyAdapterRunner,
+      async fetchImpl() {
+        rpcCalls += 1;
+        throw new Error("RPC must not be called when the operator baseline is missing");
+      },
+    }, async (base) => {
+      const response = await postIntent(base, validRequest());
+      assert.equal(response.status, 200);
+      const result = await response.json();
+      assert.equal(result.status, "NEEDS_REVIEW");
+      assert.equal(result.guard, null);
+      assert.equal(result.guard?.decision, undefined);
+      assert.equal(result.preliminaryPolicy.allowed, true);
+      assert.deepEqual(result.recipientCodeCheck, {
+        status: "UNKNOWN",
+        reason: "No valid operator code-hash baseline is configured for this testnet recipient",
+      });
+      assert.equal(result.submitted, false);
+      assert.equal(walletCalls, 0);
+      assert.equal(rpcCalls, 0);
+      assert.equal(riskCalls, 0);
+    });
+  } finally {
+    if (previousBaseline === undefined) delete process.env[CODE_HASH_BASELINES_ENV_VAR];
+    else process.env[CODE_HASH_BASELINES_ENV_VAR] = previousBaseline;
+  }
+});
+
 test("blank context remains a final warning after policy-only gate and read-only account checks", async () => {
   const { calls: rpcCalls, fetchImpl } = rpcFetchStub();
   const adapterRunner = (serialized) => runPythonAdapter(serialized, undefined, testPolicyPath);

@@ -316,40 +316,71 @@ test("derives contract and unchanged-code signals from the recipient's matching 
   assertNoSigningOrSending(walletCalls);
 });
 
-test("a changed recipient contract hash is derived and blocks on the final risk evaluation", async () => {
-  process.env[CODE_HASH_BASELINES_ENV_VAR] = baselineForAlice(CONTRACT_HASH_A);
-  const { calls, fetchImpl } = rpcFetchStub({
-    accountsById: { "alice.testnet": { code_hash: CONTRACT_HASH_B } },
-  });
-  const requests = [];
-  const policyRequests = [];
-  const walletCalls = {};
-  const result = await runPreflight({
-    fetchImpl,
-    walletCalls,
-    policyAdapterRunner(serializedRequest) {
-      policyRequests.push(JSON.parse(serializedRequest));
-      return runWithTestPolicyOnly(serializedRequest);
-    },
-    adapterRunner(serializedRequest) {
-      requests.push(JSON.parse(serializedRequest));
-      return runWithTestPolicy(serializedRequest);
-    },
-  });
+for (const {
+  label,
+  baselineHash,
+  currentHash,
+  recipientIsContract,
+  expectedScore,
+} of [
+  {
+    label: "baseline empty-code -> current contract code",
+    baselineHash: EMPTY_CODE_HASH,
+    currentHash: CONTRACT_HASH_A,
+    recipientIsContract: true,
+    expectedScore: 55,
+  },
+  {
+    label: "baseline contract code -> current empty-code",
+    baselineHash: CONTRACT_HASH_A,
+    currentHash: EMPTY_CODE_HASH,
+    recipientIsContract: false,
+    expectedScore: 50,
+  },
+  {
+    label: "baseline contract code -> different contract code",
+    baselineHash: CONTRACT_HASH_A,
+    currentHash: CONTRACT_HASH_B,
+    recipientIsContract: true,
+    expectedScore: 55,
+  },
+]) {
+  test(`a changed recipient code hash blocks fail-closed (${label})`, async () => {
+    process.env[CODE_HASH_BASELINES_ENV_VAR] = baselineForAlice(baselineHash);
+    const { calls, fetchImpl } = rpcFetchStub({
+      accountsById: { "alice.testnet": { code_hash: currentHash } },
+    });
+    const requests = [];
+    const policyRequests = [];
+    const walletCalls = {};
+    const result = await runPreflight({
+      fetchImpl,
+      walletCalls,
+      policyAdapterRunner(serializedRequest) {
+        policyRequests.push(JSON.parse(serializedRequest));
+        return runWithTestPolicyOnly(serializedRequest);
+      },
+      adapterRunner(serializedRequest) {
+        requests.push(JSON.parse(serializedRequest));
+        return runWithTestPolicy(serializedRequest);
+      },
+    });
 
-  assert.equal(result.status, "BLOCKED");
-  assert.equal(result.guard.decision, "BLOCK");
-  assert.equal(result.guard.risk.risk_score, 55);
-  assert.equal(result.guard.risk.reasons.includes("Recipient contract code changed"), true);
-  assert.equal(result.recipientCodeCheck.status, "CHANGED");
-  assert.equal(Object.hasOwn(policyRequests[0].intent.transaction, "recipient_code_changed"), false);
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].intent.transaction.recipient_is_contract, true);
-  assert.equal(requests[0].intent.transaction.recipient_code_changed, true);
-  assert.equal(calls[3].params.account_id, "alice.testnet");
-  assert.equal(result.submitted, false);
-  assertNoSigningOrSending(walletCalls);
-});
+    assert.equal(result.status, "BLOCKED");
+    assert.equal(result.guard.decision, "BLOCK");
+    assert.equal(result.guard.risk.risk_score, expectedScore);
+    assert.equal(result.guard.risk.reasons[0], "Recipient code hash changed");
+    assert.equal(result.recipientCodeCheck.status, "CHANGED");
+    assert.equal(result.recipientCodeCheck.codeHash, currentHash);
+    assert.equal(Object.hasOwn(policyRequests[0].intent.transaction, "recipient_code_changed"), false);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].intent.transaction.recipient_is_contract, recipientIsContract);
+    assert.equal(requests[0].intent.transaction.recipient_code_changed, true);
+    assert.equal(calls[3].params.account_id, "alice.testnet");
+    assert.equal(result.submitted, false);
+    assertNoSigningOrSending(walletCalls);
+  });
+}
 
 test("known_malicious remains caller-supplied and is passed to final risk unchanged", async () => {
   const { calls, fetchImpl } = rpcFetchStub();

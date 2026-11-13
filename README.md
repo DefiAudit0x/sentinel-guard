@@ -219,6 +219,8 @@ SENTINEL_GUARD_POLICY_FILE="$PWD/examples/ui_demo_policy.json" npm run ui
 
 Open `http://127.0.0.1:4173/`. The server binds only to loopback; it serves the built `dist/` assets and does not expose the configured policy file. If the default port is occupied, set `SENTINEL_GUARD_UI_PORT` to another local port. The policy path is read only from `SENTINEL_GUARD_POLICY_FILE` and must be outside the static UI directory. [`examples/ui_demo_policy.json`](examples/ui_demo_policy.json) is a public demo policy for the server's fixed `defiaudit0x.testnet` recipient and 0.1 NEAR cap; it is not a user's spending policy. The separate [`examples/test_policy.json`](examples/test_policy.json) remains bridge-test fixture data.
 
+This Quick Start configures the demo spending policy, but not the recipient code-hash baseline. On a clean clone, a policy-allowed preflight without a matching operator baseline is expected to return `NEEDS_REVIEW` with code-hash status `UNKNOWN`, no final guard decision, and no RPC request. To compare code hashes, configure the server-side baseline described below before starting `npm run ui`.
+
 The Connect button lazily loads the SDK and requests only `near::sign_in` for `{ blockchain: "near", network: "testnet" }` after an explicit click. It does not request a function-call key, a message signature, or a transaction during sign-in. SDK initialization uses `webpage_local_storage`; the Meteor Mobile bridge and its account-transfer/new-key-transfer surfaces are disabled, and there is no auto-connect. For later gates, the UI re-reads the exact signed-in Testnet account from Meteor SDK storage; the SDK does not expose the previous connector's live wallet-account-list query.
 
 The fixed-transfer path is separate from sign-in and accepts only one native self-transfer from `defiaudit0x.testnet` to itself for exactly `0.001` NEAR (`1000000000000000000000` yoctoNEAR). A local `ALLOW`, the exact result status/request ID/intent hash, a two-minute immutable review, and a separate second click are required; an untouched review closes automatically at its deadline. At the signing boundary, the UI rechecks the review binding and selected Testnet account, then sends one SDK `near::sign_transactions` action targeted to that account with `useFunctionCallKey: false`; the wallet must still show its own confirmation. After the request is handed to the wallet, the page cannot cancel an opened prompt and locks this fixed-transfer flow for the rest of the loaded page session. Check the wallet/Testnet outcome before reloading or trying again; reloading resets only this local UI state and does not establish what happened. The UI reads the exact Testnet account record saved by Meteor SDK, not a live wallet-account list; that record alone is not proof of current wallet ownership. The existing preflight remains read-only, and the local server's client-supplied account ID is not proof of ownership. This is a demonstration-only client-side gate, not production enforcement or a fee estimate. The SDK and wallet are third-party components and have not been audited here.
@@ -243,7 +245,28 @@ const result = await preflightTestnetNativeTransfer({
 console.log(result.status, result.guard?.decision ?? "no final guard", result.recipientCodeCheck?.status ?? "not checked");
 ```
 
-The recipient code-hash baseline must be supplied out-of-band by the operator in the server-side `SENTINEL_GUARD_CODE_HASH_BASELINES` environment setting as JSON records with exactly `network`, `account_id`, and `code_hash` fields. The configuration is matched to both `testnet` and the exact recipient; it must not be embedded in browser code or public files. The adapter never learns a baseline from an RPC response. A missing/invalid baseline, missing account, malformed RPC response, timeout, or other RPC failure produces `NEEDS_REVIEW` with code-hash status `UNKNOWN`, not an unchanged-code signal or final `ALLOW`; these results have no final `guard`, and retain the earlier policy-only result as `preliminaryPolicy`. `recipient_is_contract` and `recipient_code_changed` are reserved in this preflight context and are computed from the recipient's current hash and the configured baseline; `known_malicious` remains caller-supplied and is not independently verified.
+The code-hash baseline is an operator-provided trust input and must come from an independently trusted source. Do not treat the same RPC endpoint being checked as a trusted source for the baseline: a `MATCHED` result means only that the observed hash equals the configured reference, not that the account or its code is safe. Supply baseline JSON to the server through `SENTINEL_GUARD_CODE_HASH_BASELINES`; the value is JSON text, not a file path. For a local setup, keep the file outside the repository and export its contents before starting the UI:
+
+```bash
+export SENTINEL_GUARD_CODE_HASH_BASELINES="$(cat /absolute/path/to/code-hash-baselines.json)"
+SENTINEL_GUARD_POLICY_FILE="$PWD/examples/ui_demo_policy.json" npm run ui
+```
+
+Each JSON array entry must contain exactly these fields and no others:
+
+```json
+[
+  {
+    "network": "testnet",
+    "account_id": "<exact-testnet-recipient-account-id>",
+    "code_hash": "<independently-verified-base58-code-hash>"
+  }
+]
+```
+
+The angle-bracket values are schema placeholders, not valid baseline values; replace them only with the exact recipient and a valid 32-byte Base58 code hash verified from an independent trusted source. You may instead set the same JSON text directly in the server environment. Keep the configuration outside Git and never embed it in browser code or public files. The adapter does not learn a baseline from an RPC response. A missing or invalid baseline, or one without an entry for the exact recipient, returns `NEEDS_REVIEW` with code-hash status `UNKNOWN` and no final `guard`/`ALLOW`; after the policy-only gate allows, it stops preflight before RPC or wallet access. In the UI, the separate sign-in step may occur before a preflight request. With a valid matching entry, a different observed code hash is reported as `CHANGED` and adds 50 risk points whether the current account is a contract or empty; a current contract adds a separate 5 points. A missing account, malformed RPC response, timeout, or other RPC failure also produces `NEEDS_REVIEW` with `UNKNOWN`, not an unchanged-code signal or final `ALLOW`; these results retain the earlier policy-only result as `preliminaryPolicy`. `recipient_is_contract` and `recipient_code_changed` are reserved in this preflight context and are computed from the recipient's current hash and the configured baseline; `known_malicious` remains caller-supplied and is not independently verified.
+
+This comparison checks the account's local `code_hash`; it does not currently inspect NEAR's global-contract fields, so a global contract can be outside this check. See [NEAR global contracts](https://docs.near.org/smart-contracts/global-contracts).
 
 `PREPARED_NOT_SUBMITTED` means only that the policy-only gate allowed the request, both account reads succeeded, the recipient hash was compared to its configured baseline, and the final risk evaluation returned `ALLOW`. The adapter has no signing or submission path: it does not call `signAndSendTransaction`, sign any payload, hold a key, or broadcast. A final risk `WARN`/`BLOCK` prevents a prepared result, though the read-only account requests have already occurred. The test suite mocks RPC responses and does not contact NEAR. This prototype's rules and caller-provided context are experimental; a preflight result is neither a safety guarantee nor authorization to transact. The official [NEAR Connect repository](https://github.com/azbang/near-connect) describes the connector API; a real wallet connection remains a separate user interaction.
 
@@ -252,3 +275,8 @@ An `ALLOW` from this prototype is not a policy approval or authorization for a r
 ## Current limitations
 
 The Python simulator expects the caller to provide a decoded transaction dictionary and an in-memory policy engine; the bounded JSON adapter separately loads the explicitly selected local policy described above. The preflight adapter remains read-only and does not sign or submit. Only the separate browser demonstration can request the one fixed Testnet self-transfer after its review and second click. The system does not parse or independently verify the wallet's signed transaction, estimate transaction fees, audit the third-party executor, or establish production security. The demo's client-side checks are not a guarantee that the wallet executor follows them.
+
+
+## License
+
+This project is licensed under [GPL-3.0-only](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party license details. The `@meteorwallet/sdk` license attribution is inferred from the upstream `v3.24.1` tag pending confirmation from the publisher.
